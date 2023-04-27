@@ -6,17 +6,17 @@ title: Trash in Starwhale
 
 Within Starwhale, there are four distinct types of trahs: Evaluations, Models, Datasets, and Runtimes. Users can remove any of these objects, and subsequently restore them from the trash can
 
-### Search and filter
+## Search and filter
 
 Supporting fuzzy searches by a trash name.
 
 ![image](https://user-images.githubusercontent.com/101299635/234850233-30a698b6-39a5-4a7b-8b2a-124654bcd962.png)
 
-### Delete and restore trashes 
+## Delete and restore trashes 
 
 Your ability to delete or restore depends on the project role assigned to you within Starwhale. For more information, see [Roles and permission](https://doc.starwhale.ai/docs/concepts/roles-permissions)
 
-- To delete
+### To delete
 
   1 Click **Delete** to delete the trash file.
 
@@ -30,7 +30,7 @@ Your ability to delete or restore depends on the project role assigned to you wi
 
   ![image](https://user-images.githubusercontent.com/101299635/234850717-0dab5be5-d5c9-4cb2-981a-2d2037d2a9ce.png)
 
-- To restore
+### To restore
 
   1 Click **Restore** to restore the trash file to its previous versions.
 

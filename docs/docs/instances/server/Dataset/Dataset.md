@@ -134,4 +134,4 @@ If you confirm to remove, all versions of a dataset will be removed.
 
 
 ### To restore
-You can go to **Trash** to restore your datasets. For more information, see [Trash restore写完trash替换link](https://doc.starwhale.ai/docs/concepts/roles-permissions)
+You can go to **Trash** to restore your datasets. For more information, see [How to restore trash]([https://doc.starwhale.ai/docs/concepts/roles-permissions](https://github.com/lijing-susan/starwhale/blob/lijing-docs/docs/docs/instances/server/Trash/Trash.md#to-restore))

@@ -14,11 +14,11 @@ Starwhale目前支持通过微信渠道进行充值。
 
 ![image](https://user-images.githubusercontent.com/101299635/235138724-5ff15e0e-a7b6-44d5-bab1-56ad7301740f.png)
 
-2 选择或者输入充值金额，充值金额需要大于50元，同时注意支付渠道的限额（超过限额会无法支付成功）。
+2 选择或者输入充值金额，充值金额需要大于50元，同时注意支付渠道的限额（超过限额会无法支付成功）。【前端改完后重新截图，现图title不对】
 
 ![image](https://user-images.githubusercontent.com/101299635/235139093-c4bc35b2-869b-4530-a2d8-88b2d1e946d8.png)
 
-3 选择充值方式，点击“**确认充值**”，跳转第三方支付渠道完成付款。
+3 选择充值方式，点击“**确认充值**”，跳转第三方支付渠道完成付款。【前端改完后重新截图，现图title不对】
 
 ![image](https://user-images.githubusercontent.com/101299635/235139359-04c4b80c-f1e2-4991-9d35-a0c14ad3e14b.png)
 

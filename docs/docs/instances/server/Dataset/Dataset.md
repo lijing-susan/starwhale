@@ -16,7 +16,7 @@ Starwhale dataset list displays the basic dataset information: Dataset name, the
 
 ![image](https://user-images.githubusercontent.com/101299635/234795306-7311c641-ca31-44ae-9c59-a3a66433285a.png)
 
-2 Starwhale dataset history version list display the basic dataset version information: Version name, version alias, whether the version is shared, the created time of the version and dataset version action.
+2 Starwhale dataset history version list displays the basic dataset version information: Version name, version alias, whether the version is shared, the created time of the version and dataset version action.
 
 ![image](https://user-images.githubusercontent.com/101299635/234825710-37a13e18-7df1-471c-b339-445f49435c91.png)
 
@@ -26,7 +26,7 @@ If a dataset version is shared, it is visible to anyone. If it is not shared,  i
 
 ## Dataset details
 
-Dataset version information comprises three parts: Overview, metadata, and files.
+Dataset version information consists of three parts: Overview, metadata, and files.
 
 **Overview**: The basic information of a dataset version, including dataset name, dataset version name, dataset version aliases, whether the dataset version is shared, and the created time of a dataset version.
 
@@ -119,7 +119,6 @@ Easily switch between shared and unshared modes for dataset versions by clicking
 
 ![image](https://user-images.githubusercontent.com/101299635/234837932-18a7270f-a1c5-48f6-8aec-5f58458d357c.png)
 
-
 ## Remove a dataset and restore a dataset
 
 ### To remove
@@ -132,6 +131,7 @@ If you confirm to remove, all versions of a dataset will be removed.
 
 ![image](https://user-images.githubusercontent.com/101299635/234845251-f96b7cb5-c2e5-4257-be18-ed89840eb323.png)
 
-
 ### To restore
-You can go to **Trash** to restore your datasets. For more information, see [How to restore trash]([https://doc.starwhale.ai/docs/concepts/roles-permissions](https://github.com/lijing-susan/starwhale/blob/lijing-docs/docs/docs/instances/server/Trash/Trash.md#to-restore))
+
+You can go to **Trash** to restore your datasets. For more information, see [How to restore trash](https://github.com/lijing-susan/starwhale/blob/lijing-docs/docs/docs/instances/server/Trash/Trash.md#to-restore)
+

@@ -33,7 +33,7 @@ Dataset version information consists of three parts: Overview, metadata, and fil
 ![image](https://user-images.githubusercontent.com/101299635/234795667-e2331a52-351d-4dcd-a5ad-631596cd2ea9.png)
 
 :::tip
-Switch hte button to set a dataset version to a shared mode if the dataset belongs to a public project. A shared dataset can be seen and used for everyone. For more information, see [Roles and permissions](https://doc.starwhale.ai/docs/concepts/roles-permissions) 
+Switch the button to set a dataset version to a shared mode if the dataset belongs to a public project. A shared dataset can be seen and used for everyone. For more information, see [Roles and permissions](https://doc.starwhale.ai/docs/concepts/roles-permissions) 
 :::
 
 **Metadata**: The metadata of the dataset, including the building os information, Starwhale version information, and dataset summarized information.

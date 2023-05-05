@@ -6,7 +6,7 @@ title: Models in Starwhale
 
 ### Model display
 
-Starwhale dataset list displays the basic information of a model: Model name, model owner, the latest model version alias,the created time, and model actions.
+Starwhale model list displays the basic information of a model: Model name, model owner, the latest model version alias,the created time, and model actions.
 
 ![image](https://user-images.githubusercontent.com/101299635/236391430-9dd8c92a-8386-4ec6-af39-e946f3f656a3.png)
 
@@ -16,7 +16,7 @@ Starwhale dataset list displays the basic information of a model: Model name, mo
 
 ![image](https://user-images.githubusercontent.com/101299635/236391862-ef6b8905-e9e5-4781-b92c-43e276e7bf84.png)
 
-2 Starwhale model history version list displays the basic model version information: Version name, version alias, the created time of the version, and dataset version action.
+2 Starwhale model history version list displays the basic model version information: Version name, version alias, the created time of the version, and model version action.
 
 ![image](https://user-images.githubusercontent.com/101299635/236392797-b2582a8e-e1dc-46a1-8e63-5f263f9bac6d.png)
 
@@ -28,7 +28,7 @@ Click **Online Evaluation** can execute online evaluation. For more information,
 
 Model version information consists of two parts: Overview and files.
 
-**Overview**: The basic information of a model version, including model name, model version name, model version aliases, and the created time of a dataset version.
+**Overview**: The basic information of a model version, including model name, model version name, model version aliases, and the created time of a model version.
 
 ![image](https://user-images.githubusercontent.com/101299635/234795667-e2331a52-351d-4dcd-a5ad-631596cd2ea9.png)
 

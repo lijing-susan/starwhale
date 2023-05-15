@@ -14,7 +14,7 @@ Each time you run an evaluation with Starwhale Web UI, Starwhale Client or Pytho
 
 You can save your evaluation table configuration to a custom view, and it's visible to anymember of the project.
 
-**Save and save as a new view
+**Save and save as a new view**
 
 If you edit some configurations including search, filter and table columns, the **Save as** and **Save** button will automatically be displayed. 
 
@@ -38,7 +38,7 @@ If you edit some configurations including search, filter and table columns, the 
 
  ![image](https://user-images.githubusercontent.com/101299635/236806207-1d8f4a30-321a-496a-94fd-4a2cf2d8a4e1.png)
 
-**Manage views
+**Manage views**
 
 1 Click **Manage views** in the custom view drop list
 
@@ -68,7 +68,7 @@ The summary information of an evaluation, including evaluation metrics, evalutio
 
 ### Custom Panels
 
-**To create
+**To create**
 
 To create a Panel, clicking **Add Panel** button which is at the bottom of the page
 
@@ -80,19 +80,19 @@ Or to create a Panel, clicking **More** button, then click **Add Panel Above** o
 
 ![image](https://github.com/lijing-susan/starwhale/assets/101299635/25fdf551-4166-4b73-8240-8aed482d16af)
 
-**To rename
+**To rename**
 
 To rename a Panel, clicking **More** button, then click **Rename** and input a new name.
 
 ![image](https://github.com/lijing-susan/starwhale/assets/101299635/e16d7d20-2f87-4e83-a507-1724855735de)
 
-**To delete
+**To delete**
 
 To delete a Panel, clicking **More** button, then click **Delete**.
 
 ![image](https://github.com/lijing-susan/starwhale/assets/101299635/969e7677-a2bb-493f-bff1-02624f952b69)
 
-**To change the display order of the panel
+**To change the display order of the panel**
 
 First to hover on the top of the panel，then click the button in the middle, and drag the panel to your expecting position to change its display oder.
 
@@ -100,7 +100,7 @@ First to hover on the top of the panel，then click the button in the middle, an
 
 ### Custom Charts
 
-**To create
+**To create**
 
 To create a Chart, clicking **Add Chart** button which is on the right side of the panel.
 
@@ -108,13 +108,13 @@ To create a Chart, clicking **Add Chart** button which is on the right side of t
 
 Types of charts: Table, Roc-Auc chart, and Confusion Matrix.
 
-**To edit
+**To edit**
 
 Hover on the top of the chart，click the **Configuration** button, and then select **Edit Chart**.
 
 ![image](https://github.com/lijing-susan/starwhale/assets/101299635/7e1291a3-38a7-4d6a-8869-b63037ec4bd3)
 
-**To delete
+**To delete**
 
 Hover on the top of the chart，click the **Configuration** button, and then select **Delete Chart**.
 
@@ -128,13 +128,13 @@ Click the **Actions** tab，you can see the DAG graph
 
 ### Evaluation tasks and logs
 
-**Tasks
+**Tasks**
 
 Click **Tasks** tab to see all the tasks of an evaluation, or click a specific bar in the DAG to go to the task table.
 
 ![image](https://github.com/lijing-susan/starwhale/assets/101299635/2f580fa4-868e-4d8d-b14a-ea72396fd757)
 
-**Logs
+**Logs**
 
 Clic **View logs** buttton at the end of the task table to view logs.
 

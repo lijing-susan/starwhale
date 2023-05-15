@@ -52,7 +52,7 @@ If you edit some configurations including search, filter and table columns, the 
 
 To select evaluations to compare by clicking the checkbox to include or exclude evaluations.
 
-![image](https://github.com/lijing-susan/starwhale/assets/101299635/3f511788-8bff-417e-80b7-435634d8d41d)
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/3ca880ae-7f57-4e54-bd1c-24952f756cd6)
 
 ![image](https://github.com/lijing-susan/starwhale/assets/101299635/1a0c81c2-fd2e-411f-9ef2-26b2d37fd77d)
 
@@ -90,13 +90,13 @@ To rename a Panel, clicking **More** button, then click **Rename** and input a n
 
 To delete a Panel, clicking **More** button, then click **Delete**.
 
-![image](https://github.com/lijing-susan/starwhale/assets/101299635/969e7677-a2bb-493f-bff1-02624f952b69)
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/e6d46ac7-d5db-40e0-8573-1a532bfecc49)
 
 **To change the display order of the panel**
 
 First to hover on the top of the panel，then click the button in the middle, and drag the panel to your expecting position to change its display oder.
 
-![image](https://github.com/lijing-susan/starwhale/assets/101299635/52d220bb-70ff-4a99-bde6-a74ade881191)
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/ba97aa85-b963-4edd-9b2c-888ff63878d4)
 
 ### Custom Charts
 
@@ -118,13 +118,13 @@ Hover on the top of the chart，click the **Configuration** button, and then sel
 
 Hover on the top of the chart，click the **Configuration** button, and then select **Delete Chart**.
 
-![image](https://github.com/lijing-susan/starwhale/assets/101299635/1be6a89f-6b83-4bac-af2e-e29b0fff6f88)
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/b15d4113-2774-42ee-b82f-c07cf0910845)
 
 ### Evaluation DAG
 
 Click the **Actions** tab，you can see the DAG graph
 
-![image](https://github.com/lijing-susan/starwhale/assets/101299635/e12d732b-d507-42a0-ba6a-11a3d8cc4320)
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/5fbeff02-0011-4303-9207-4b27be02a42c)
 
 ### Evaluation tasks and logs
 
@@ -138,4 +138,4 @@ Click **Tasks** tab to see all the tasks of an evaluation, or click a specific b
 
 Clic **View logs** buttton at the end of the task table to view logs.
 
-![image](https://github.com/lijing-susan/starwhale/assets/101299635/c8c1d98b-b576-4f4f-8d33-cd312c5ca5d0)
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/f1b896a7-f55b-40c9-a419-f44e0a3575fa)

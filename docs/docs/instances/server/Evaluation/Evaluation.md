@@ -8,7 +8,7 @@ In the evaluation table, you can see all the evaluations of one project in one p
 
 Each time you run an evaluation with Starwhale Web UI, Starwhale Client or Python SDK, it's added to the top of the table.
 
-【补截图】
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/0fececdd-3675-4dcf-a2d2-36e52393a5eb)
 
 ### Custom views of the evaluation table
 
@@ -52,9 +52,90 @@ If you edit some configurations including search, filter and table columns, the 
 
 To select evaluations to compare by clicking the checkbox to include or exclude evaluations.
 
-【补截图】
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/3f511788-8bff-417e-80b7-435634d8d41d)
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/1a0c81c2-fd2e-411f-9ef2-26b2d37fd77d)
 
 ### Search and filter
 
+## Evaluation details
 
+### Evaluation summary
 
+The summary information of an evaluation, including evaluation metrics, evalution status, model and its version name, runtime and its version name, evaluation started and finished time, owner, resource pool, and step specification.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/177621b6-85f1-4eed-b54b-6f4d92713efe)
+
+### Custom Panels
+
+**To create
+
+To create a Panel, clicking **Add Panel** button which is at the bottom of the page
+
+A Panel can be created only if you have "Project owner" permission.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/a9b85788-8d87-44e9-a9f7-3603c0fe4e13)
+
+Or to create a Panel, clicking **More** button, then click **Add Panel Above** or **Add Panel Below** 
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/25fdf551-4166-4b73-8240-8aed482d16af)
+
+**To rename
+
+To rename a Panel, clicking **More** button, then click **Rename** and input a new name.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/e16d7d20-2f87-4e83-a507-1724855735de)
+
+**To delete
+
+To delete a Panel, clicking **More** button, then click **Delete**.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/969e7677-a2bb-493f-bff1-02624f952b69)
+
+**To change the display order of the panel
+
+First to hover on the top of the panel，then click the button in the middle, and drag the panel to your expecting position to change its display oder.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/52d220bb-70ff-4a99-bde6-a74ade881191)
+
+### Custom Charts
+
+**To create
+
+To create a Chart, clicking **Add Chart** button which is on the right side of the panel.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/489a679e-ea01-4cbf-ad9f-e8aed59231a3)
+
+Types of charts: Table, Roc-Auc chart, and Confusion Matrix.
+
+**To edit
+
+Hover on the top of the chart，click the **Configuration** button, and then select **Edit Chart**.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/7e1291a3-38a7-4d6a-8869-b63037ec4bd3)
+
+**To delete
+
+Hover on the top of the chart，click the **Configuration** button, and then select **Delete Chart**.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/1be6a89f-6b83-4bac-af2e-e29b0fff6f88)
+
+### Evaluation DAG
+
+Click the **Actions** tab，you can see the DAG graph
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/e12d732b-d507-42a0-ba6a-11a3d8cc4320)
+
+### Evaluation tasks and logs
+
+**Tasks
+
+Click **Tasks** tab to see all the tasks of an evaluation, or click a specific bar in the DAG to go to the task table.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/2f580fa4-868e-4d8d-b14a-ea72396fd757)
+
+**Logs
+
+Clic **View logs** buttton at the end of the task table to view logs.
+
+![image](https://github.com/lijing-susan/starwhale/assets/101299635/c8c1d98b-b576-4f4f-8d33-cd312c5ca5d0)

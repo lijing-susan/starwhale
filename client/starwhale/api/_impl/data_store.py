@@ -42,11 +42,11 @@ import pyarrow as pa  # type: ignore
 import requests
 import tenacity
 import jsonlines
-from loguru import logger
 from filelock import FileLock
 from jsonlines import Writer
 from typing_extensions import Protocol
 
+from starwhale.utils import console
 from starwhale.consts import STANDALONE_INSTANCE
 from starwhale.utils.fs import ensure_dir
 from starwhale.consts.env import SWEnv
@@ -121,12 +121,12 @@ class SwType(metaclass=ABCMeta):
         if type_name == "LIST":
             element_type = schema.get("elementType", None)
             if element_type is None:
-                raise RuntimeError("no element type found for type LIST")
+                raise RuntimeError(f"no element type found for type {type_name}")
             return SwListType(SwType.decode_schema(element_type))
         if type_name == "TUPLE":
             element_type = schema.get("elementType", None)
             if element_type is None:
-                raise RuntimeError("no element type found for type TUPLE")
+                raise RuntimeError(f"no element type found for type {type_name}")
             return SwTupleType(SwType.decode_schema(element_type))
         if type_name == "MAP":
             key_type = schema.get("keyType", None)
@@ -167,12 +167,106 @@ class SwType(metaclass=ABCMeta):
             raise RuntimeError(f"can not determine schema: {type_name}")
         return ret
 
+    @staticmethod
+    def decode_schema_from_type_encoded_value(value: Dict[str, Any]) -> "SwType":
+        type_name = value.get("type", None)
+        if type_name is None:
+            raise RuntimeError("no type in schema")
+        if type_name == "LIST" or type_name == "TUPLE":
+            # {
+            # 	"type": "LIST",
+            # 	"value": [{
+            # 	  "type": "INT8",
+            # 	  "value": "01"
+            # 	}]
+            # }
+            element_type: SwType = UNKNOWN
+            v = value.get("value", [])
+            # TODO: support more than one item types
+            if isinstance(v, (list, tuple)) and len(v) != 0:
+                element_type = SwType.decode_schema_from_type_encoded_value(v[0])
+            if type_name == "LIST":
+                return SwListType(element_type)
+            else:
+                return SwTupleType(element_type)
+        if type_name == "MAP":
+            # {
+            # 	"type": "MAP",
+            # 	"value": [{
+            # 	  "key": {
+            # 	     "type": "INT8",
+            # 	     "value": "01"
+            # 	  },
+            # 	  "value": {
+            # 	     "type": "INT16",
+            # 	     "value": "0002"
+            # 	  }
+            # 	}]
+            # }
+            items = value.get("value", [])
+            if len(items) == 0:
+                raise RuntimeError("no items in map")
+            # TODO: support more than one item types
+            k = items[0]["key"]
+            v = items[0]["value"]
+
+            key_type = SwType.decode_schema_from_type_encoded_value(k)
+            value_type = SwType.decode_schema_from_type_encoded_value(v)
+            return SwMapType(key_type, value_type)
+        if type_name == "OBJECT":
+            # {
+            # 	"type": "OBJECT",
+            # 	"pythonType": "LINK",
+            # 	"value": {
+            # 	  "id": {
+            # 	    "type": "INT64",
+            # 	    "value": "0000000000000001"
+            # 	  },
+            # 	  "type": {
+            # 	    "type": "INT8",
+            # 	    "value": "01"
+            # 	  }
+            # 	}
+            # }
+            raw_type_name = value.get("pythonType", None)
+            if raw_type_name is None:
+                raise RuntimeError("no python type found for type OBJECT")
+            if raw_type_name == "LINK":
+                raw_type = Link
+            else:
+                parts = raw_type_name.split(".")
+                raw_type = getattr(
+                    importlib.import_module(".".join(parts[:-1])), parts[-1]
+                )
+            attrs = {}
+            # try using values as attributes
+            values = value.get("value", {})
+            if not isinstance(values, dict):
+                raise RuntimeError(
+                    f"invalid schema, values should be a dict, actual {type(values)}"
+                )
+            for k, v in values.items():
+                attrs[k] = SwType.decode_schema_from_type_encoded_value(v)
+            return SwObjectType(raw_type, attrs)
+        ret = _TYPE_NAME_DICT.get(type_name, None)
+        if ret is None:
+            raise RuntimeError(f"can not determine schema: {type_name}")
+        return ret
+
     @abstractmethod
     def encode(self, value: Any) -> Optional[Any]:
         ...
 
     @abstractmethod
     def decode(self, value: Any) -> Any:
+        ...
+
+    @abstractmethod
+    def encode_type_encoded_value(self, value: Any, raw_value: bool = False) -> Any:
+        ...
+
+    @abstractmethod
+    def decode_from_type_encoded_value(self, value: Any) -> Any:
         ...
 
     @abstractmethod
@@ -261,6 +355,15 @@ class SwScalarType(SwType):
                 return struct.unpack(">d", raw)[0]
         raise RuntimeError("invalid type " + str(self))
 
+    def encode_type_encoded_value(self, value: Any, raw_value: bool = False) -> Any:
+        return {
+            "type": str(self),
+            "value": raw_value and str(value) or self.encode(value),
+        }
+
+    def decode_from_type_encoded_value(self, value: Any) -> Any:
+        return self.decode(value["value"])
+
     def __str__(self) -> str:
         if self.name == "int" or self.name == "float":
             return f"{self.name}{self.nbits}".upper()
@@ -279,6 +382,7 @@ class SwCompositeType(SwType):
         return dill.loads(value)
 
 
+# TODO support multiple types for items
 class SwListType(SwCompositeType):
     def __init__(self, element_type: SwType) -> None:
         super().__init__("list")
@@ -306,6 +410,30 @@ class SwListType(SwCompositeType):
             return None
         if isinstance(value, list):
             return [self.element_type.decode(element) for element in value]
+        raise RuntimeError(f"value should be a list: {value}")
+
+    def encode_type_encoded_value(self, value: Any, raw_value: bool = False) -> Any:
+        if value is None:
+            return {"type": str(self), "value": None}
+        if isinstance(value, list):
+            return {
+                "type": "LIST",
+                "value": [
+                    self.element_type.encode_type_encoded_value(element, raw_value)
+                    for element in value
+                ],
+            }
+        raise RuntimeError(f"value should be a list: {value}")
+
+    def decode_from_type_encoded_value(self, value: Any) -> Any:
+        value = value["value"]
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return [
+                self.element_type.decode_from_type_encoded_value(element)
+                for element in value
+            ]
         raise RuntimeError(f"value should be a list: {value}")
 
     def __str__(self) -> str:
@@ -344,6 +472,32 @@ class SwTupleType(SwCompositeType):
             return None
         if isinstance(value, list):
             return tuple([self.element_type.decode(element) for element in value])
+        raise RuntimeError(f"value should be a list: {value}")
+
+    def encode_type_encoded_value(self, value: Any, raw_value: bool = False) -> Any:
+        if value is None:
+            return {"type": str(self), "value": None}
+        if isinstance(value, tuple):
+            return {
+                "type": "TUPLE",
+                "value": [
+                    self.element_type.encode_type_encoded_value(element, raw_value)
+                    for element in value
+                ],
+            }
+        raise RuntimeError(f"value should be a tuple: {value}")
+
+    def decode_from_type_encoded_value(self, value: Any) -> Any:
+        value = value["value"]
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return tuple(
+                [
+                    self.element_type.decode_from_type_encoded_value(element)
+                    for element in value
+                ]
+            )
         raise RuntimeError(f"value should be a list: {value}")
 
     def __str__(self) -> str:
@@ -389,6 +543,37 @@ class SwMapType(SwCompositeType):
             return {
                 self.key_type.decode(k): self.value_type.decode(v)
                 for k, v in value.items()
+            }
+        raise RuntimeError(f"value should be a dict: {value}")
+
+    def encode_type_encoded_value(self, value: Any, raw_value: bool = False) -> Any:
+        if value is None:
+            return {"type": str(self), "value": None}
+        if isinstance(value, dict):
+            return {
+                "type": "MAP",
+                "value": [
+                    {
+                        "key": self.key_type.encode_type_encoded_value(k, raw_value),
+                        "value": self.value_type.encode_type_encoded_value(
+                            v, raw_value
+                        ),
+                    }
+                    for k, v in value.items()
+                ],
+            }
+        raise RuntimeError(f"value should be a dict: {value}")
+
+    def decode_from_type_encoded_value(self, value: Any) -> Any:
+        value = value["value"]
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return {
+                self.key_type.decode_from_type_encoded_value(
+                    item["key"]
+                ): self.value_type.decode_from_type_encoded_value(item["value"])
+                for item in value
             }
         raise RuntimeError(f"value should be a dict: {value}")
 
@@ -455,6 +640,38 @@ class SwObjectType(SwCompositeType):
                 if type is None:
                     raise RuntimeError(f"invalid attribute {k}")
                 ret.__dict__[k] = type.decode(v)
+            return ret
+        raise RuntimeError(f"value should be a dict: {value}")
+
+    def encode_type_encoded_value(self, value: Any, raw_value: bool = False) -> Any:
+        if value is None:
+            return {"type": "OBJECT", "value": None}
+        if isinstance(value, self.raw_type):
+            return {
+                "type": "OBJECT",
+                "pythonType": "LINK"
+                if self.raw_type is Link
+                else self.raw_type.__module__ + "." + self.raw_type.__name__,
+                "value": {
+                    k: self.attrs[k].encode_type_encoded_value(v, raw_value)
+                    for k, v in value.__dict__.items()
+                },
+            }
+        raise RuntimeError(
+            f"value should be of type {self.raw_type.__name__}, but is {value}"
+        )
+
+    def decode_from_type_encoded_value(self, value: Any) -> Any:
+        value = value["value"]
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            ret = self.raw_type()
+            for k, v in value.items():
+                type = self.attrs.get(k, None)
+                if type is None:
+                    raise RuntimeError(f"invalid attribute {k}")
+                ret.__dict__[k] = type.decode_from_type_encoded_value(v)
             return ret
         raise RuntimeError(f"value should be a dict: {value}")
 
@@ -1333,7 +1550,7 @@ class RemoteDataStore:
         )
 
         if resp.status_code != HTTPStatus.OK:
-            logger.error(
+            console.error(
                 f"[update-table]Table:{table_name}, resp code:{resp.status_code}, \n resp text: {resp.text}, \n records: {records}"
             )
         resp.raise_for_status()
@@ -1361,7 +1578,10 @@ class RemoteDataStore:
         keep_none: bool = False,
         end_inclusive: bool = False,
     ) -> Iterator[Dict[str, Any]]:
-        post_data: Dict[str, Any] = {"tables": [table.to_dict() for table in tables]}
+        post_data: Dict[str, Any] = {
+            "tables": [table.to_dict() for table in tables],
+            "encodeWithType": True,
+        }
         key_type = _get_type(start)
         if end is not None:
             post_data["end"] = key_type.encode(end)
@@ -1378,21 +1598,15 @@ class RemoteDataStore:
             records = resp_json.get("records", None)
             if records is None or len(records) == 0:
                 break
-            column_types_list = resp_json.get("columnTypes", None)
-            if column_types_list is None:
-                raise RuntimeError("no column types in response")
-            column_types = {
-                col["name"]: SwType.decode_schema(col) for col in column_types_list
-            }
             for record in records:
                 r: Dict[str, Any] = {}
                 for k, v in record.items():
-                    col_type = column_types.get(k, None)
+                    col_type = SwType.decode_schema_from_type_encoded_value(v)
                     if col_type is None:
                         raise RuntimeError(
                             f"unknown type for column {k}, record={record}"
                         )
-                    r[k] = col_type.decode(v)
+                    r[k] = col_type.decode_from_type_encoded_value(v)
                 yield r
             if len(records) == 1000:
                 post_data["start"] = resp_json["lastKey"]
@@ -1545,24 +1759,37 @@ class TableWriter(threading.Thread):
 
             try:
                 to_submit: List[Dict[str, Any]] = []
-                last_schema = None
+                last_schema: TableSchema | None = None
                 for schema, records in self._updating_records:
                     # group the records with the same schema
                     if last_schema is None:
                         last_schema = schema
-                    elif last_schema != schema:
-                        self.latest_revision = self.data_store.update_table(
-                            self.table_name, last_schema, to_submit
-                        )
-                        to_submit = []
-                        last_schema = schema
+                    else:
+                        can_merge = True
+                        try:
+                            last_schema.merge(schema)
+                        except Exception:
+                            can_merge = False
+                        if not can_merge:
+                            console.debug(f"schema changed, {last_schema} -> {schema}")
+                            console.debug(
+                                f"update table {self.table_name}, {len(to_submit)} records"
+                            )
+                            self.latest_revision = self.data_store.update_table(
+                                self.table_name, last_schema, to_submit
+                            )
+                            to_submit = []
+                            last_schema = schema
                     to_submit.extend(records)
                 if len(to_submit) > 0 and last_schema is not None:
+                    console.trace(
+                        f"update table {self.table_name}, {len(to_submit)} records"
+                    )
                     self.latest_revision = self.data_store.update_table(
                         self.table_name, last_schema, to_submit
                     )
             except Exception as e:
-                logger.exception(e)
+                console.print_exception()
                 self._queue_run_exceptions.append(e)
                 if len(self._queue_run_exceptions) > self._run_exceptions_limits:
                     break

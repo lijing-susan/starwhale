@@ -1,22 +1,32 @@
+from __future__ import annotations
+
 import os
 import sys
 import uuid
 import errno
 import shutil
 import typing as t
+import tempfile
+from http import HTTPStatus
 from pathlib import Path
+from contextlib import contextmanager
 from unittest.mock import patch, MagicMock
 
+import dill
+import jsonlines
+import requests_mock
 from pyfakefs.fake_filesystem_unittest import TestCase
 
 from starwhale.utils import gen_uniq_version
-from starwhale.consts import DEFAULT_PROJECT
-from starwhale.base.uri import URI
+from starwhale.consts import HTTPMethod, ENV_POD_NAME, DEFAULT_PROJECT
 from starwhale.utils.fs import ensure_dir, ensure_file
-from starwhale.base.type import URIType, RunSubDirType
+from starwhale.base.type import RunSubDirType
 from starwhale.utils.error import ParameterError
-from starwhale.base.context import Context
+from starwhale.utils.retry import http_retry
+from starwhale.base.context import Context, pass_context
 from starwhale.core.job.store import JobStorage
+from starwhale.base.uri.project import Project
+from starwhale.base.uri.resource import Resource, ResourceType
 from starwhale.core.dataset.type import Link, DatasetSummary, GrayscaleImage
 from starwhale.core.dataset.store import ObjectStore, DatasetStorage
 from starwhale.api._impl.evaluation import PipelineHandler, EvaluationLogStore
@@ -26,14 +36,69 @@ from starwhale.api._impl.dataset.loader import DataRow, DataLoader, get_data_loa
 from .. import ROOT_DIR, BaseTestCase
 
 
+class BatchDataHandler(PipelineHandler):
+    def __init__(self) -> None:
+        super().__init__(predict_batch_size=2)
+
+    def predict(self, data: t.List[t.Dict]) -> t.Dict:
+        assert isinstance(data, list)
+        assert isinstance(data[0]["image"], GrayscaleImage)
+        return {"result": "ok"}
+
+
+class ExceptionHandler(PipelineHandler):
+    def predict(self, data: t.Dict, external: t.Dict) -> t.Any:
+        raise Exception("predict test exception")
+
+    def evaluate(self, result: t.Iterator) -> None:
+        raise Exception("evaluate test exception")
+
+
+class NoLogHandler(PipelineHandler):
+    def __init__(self) -> None:
+        super().__init__(predict_auto_log=False)
+
+    def predict(self, data: t.Dict) -> t.Dict:
+        assert isinstance(data["image"], GrayscaleImage)
+        return {"result": "ok"}
+
+    def evaluate(self):
+        ...
+
+
+class PlainHandler(PipelineHandler):
+    def __init__(self) -> None:
+        super().__init__(
+            predict_log_mode="plain",
+            predict_log_dataset_features=["image", "label"],
+        )
+
+    def predict(self, data: t.Dict) -> t.Dict:
+        assert isinstance(data["image"], GrayscaleImage)
+        assert isinstance(data["label"], int)
+        assert isinstance(data.annotation, str)  # type: ignore
+
+        return {"result": "ok"}
+
+    def evaluate(self, result: t.Iterator) -> None:
+        for r in result:
+            assert isinstance(r["input"]["image"], GrayscaleImage)
+            assert isinstance(r["input"]["label"], int)
+            assert "annotation" not in r["input"]
+
+            assert "input/image" not in r
+            assert r["output/result"] == "ok"
+
+
 class SimpleHandler(PipelineHandler):
-    def ppl(self, data: bytes, **kw: t.Any) -> t.Any:
+    def ppl(self, data: t.Dict) -> t.Any:
+        assert isinstance(data, dict)
         return [1, 2], 0.1
 
     def cmp(self, _data_loader: t.Any) -> t.Any:
         for _data in _data_loader:
-            assert "result" in _data
-            assert "annotations" in _data
+            assert _data["input"]["label"] == 1
+            assert _data["output"] == ([1, 2], 0.1)
         return {
             "summary": {"a": 1},
             "kind": "test",
@@ -77,7 +142,8 @@ class TestModelPipelineHandler(TestCase):
         self.project = DEFAULT_PROJECT
         self.eval_id = "mm3wky3dgbqt"
 
-        self.dataset_uri_raw = f"mnist/version/{gen_uniq_version()}"
+        self.dataset_version = gen_uniq_version()
+        self.dataset_uri_raw = f"mnist/version/{self.dataset_version}"
         self.swds_dir = os.path.join(ROOT_DIR, "data", "dataset", "swds")
         self.fs.add_real_directory(self.swds_dir)
 
@@ -93,10 +159,44 @@ class TestModelPipelineHandler(TestCase):
         ObjectStore._stores = {}
 
         _loader = get_data_loader(
-            dataset_uri=URI("mnist/version/latest", URIType.DATASET),
+            dataset_uri=Resource(
+                "mnist/version/latest",
+                typ=ResourceType.dataset,
+            ),
         )
         assert isinstance(_loader, DataLoader)
         assert not ObjectStore._stores
+
+    @patch("starwhale.api._impl.wrapper.Evaluation.get_results")
+    @patch("starwhale.api._impl.wrapper.Evaluation.log_metrics")
+    @patch("starwhale.api._impl.wrapper.Evaluation.log")
+    def test_cmp_with_plain_log_mode(
+        self,
+        m_eval_log: MagicMock,
+        m_eval_log_metrics: MagicMock,
+        m_eval_get: MagicMock,
+    ) -> None:
+        m_eval_get.return_value = [
+            {
+                "_mode": "plain",
+                "id": "mnist-1",
+                "output/result": "ok",
+                "input/image": GrayscaleImage(),
+                "input/label": 1,
+            }
+        ]
+
+        context = Context(
+            workdir=Path(),
+            project=self.project,
+            version=self.eval_id,
+            dataset_uris=[self.dataset_uri_raw],
+            step="cmp",
+            index=0,
+        )
+        Context.set_runtime_context(context)
+        with PlainHandler() as _handler:
+            _handler._starwhale_internal_run_evaluate()
 
     @patch("starwhale.api._impl.wrapper.Evaluation.get_results")
     @patch("starwhale.api._impl.wrapper.Evaluation.log_metrics")
@@ -114,17 +214,10 @@ class TestModelPipelineHandler(TestCase):
         # mock datastore return results
         m_eval_get.return_value = [
             {
-                "result": "gASVaQAAAAAAAABdlEsHYV2UXZQoRz4mBBuTAu5hRz4bF5vyEiX+Rz479hi1FqrRRz5MqGToQCdARz3WYwL267cBRz3TzJIFVM1PRz1u4heY2/90Rz/wAAAAAAAARz3Kj1Gg+FBvRz5s1fMUlZZ8ZWGGlC4=",
-                "data_size": "784",
+                "output": dill.dumps(([1, 2], 0.1)),
                 "id": "0",
-                "annotations": "gASVBQAAAAAAAABLB4WULg==",
-            },
-            {
-                "result": "gASVaQAAAAAAAABdlEsCYV2UXZQoRz7HJD9vpfz2Rz7nuBHd45K7Rz/v/95AI4woRz54jeSOtfKhRz4ydvSYTUVCRz4C6uB7EvDbRz66RdBlHOhyRz4yZGRfv61uRz6WGg/Jbfu6Rz3Qy/2xeB34ZWGGlC4=",
-                "data_size": "784",
-                "id": "1",
-                "annotations": "gASVBQAAAAAAAABLAoWULg==",
-            },
+                "input/label": 1,
+            }
         ]
 
         context = Context(
@@ -137,71 +230,249 @@ class TestModelPipelineHandler(TestCase):
         )
         Context.set_runtime_context(context)
         with SimpleHandler() as _handler:
-            _handler._starwhale_internal_run_cmp()
+            _handler._starwhale_internal_run_evaluate()
 
         status_file_path = os.path.join(_status_dir, "current")
         assert os.path.exists(status_file_path)
         assert "success" in open(status_file_path).read()
-        assert os.path.exists(os.path.join(_status_dir, "timeline"))
+        timeline_path = os.path.join(_status_dir, "timeline")
+        assert os.path.exists(timeline_path)
 
-    @patch.dict(os.environ, {})
-    @patch("starwhale.core.dataset.tabular.DatastoreWrapperDataset.scan_id")
-    @patch("starwhale.api._impl.dataset.Dataset.info")
-    @patch("starwhale.api._impl.dataset.Dataset.batch_iter")
-    @patch("starwhale.api._impl.wrapper.Evaluation.log_result")
-    @patch("starwhale.core.dataset.model.StandaloneDataset.summary")
-    def test_ppl(
-        self,
-        m_summary: MagicMock,
-        m_eval_log: MagicMock,
-        m_ds: MagicMock,
-        m_ds_info: MagicMock,
-        m_scan_id: MagicMock,
-    ) -> None:
-        _logdir = JobStorage.local_run_dir(self.project, self.eval_id)
-        _run_dir = _logdir / RunSubDirType.RUNLOG / "ppl" / "0"
-        _status_dir = _run_dir / RunSubDirType.STATUS
+        os.unlink(timeline_path)
 
-        m_summary.return_value = DatasetSummary(
-            rows=1,
-        )
+        with self.assertRaisesRegex(Exception, "evaluate test exception"):
+            with ExceptionHandler() as handler:
+                handler._starwhale_internal_run_evaluate()
 
-        fname = "data_ubyte_0.swds_bin"
-        m_scan_id.return_value = [{"id": 0}]
-        m_ds.return_value = [
-            [DataRow(0, {"image": GrayscaleImage(link=Link(fname)), "label": 0})]
-        ]
-        m_ds_info.return_value = TabularDatasetInfo(mapping={"id": 0, "value": 1})
+        with jsonlines.open(timeline_path) as reader:
+            assert len(list(reader)) == 1
+            for r in reader:
+                assert r["status"] == "failed"
 
-        datastore_dir = DatasetStorage(URI(self.dataset_uri_raw, URIType.DATASET))
-        data_dir = datastore_dir.data_dir
-        ensure_dir(data_dir)
-        shutil.copyfile(os.path.join(self.swds_dir, fname), str(data_dir / fname))
-        ensure_dir(datastore_dir.loc)
-        ensure_file(datastore_dir.manifest_path, "")
+        with NoLogHandler() as handler:
+            handler._starwhale_internal_run_evaluate()
 
-        context = Context(
-            workdir=Path(),
-            project=self.project,
-            version=self.eval_id,
-            dataset_uris=[self.dataset_uri_raw],
-            step="ppl",
-            index=0,
-        )
-        Context.set_runtime_context(context)
-        with SimpleHandler() as _handler:
-            _handler._starwhale_internal_run_ppl()
+    @contextmanager
+    def _mock_ppl_prepare_data_in_cloud(self) -> t.Any:
+        with patch(
+            "starwhale.base.uri.resource.Resource._refine_local_rc_info"
+        ) as _, patch(
+            "starwhale.core.dataset.model.CloudDataset.summary"
+        ) as m_summary, patch(
+            "starwhale.api._impl.dataset.Dataset.batch_iter"
+        ) as m_ds, patch(
+            "starwhale.api._impl.dataset.Dataset.info"
+        ) as m_ds_info, patch(
+            "starwhale.api._impl.wrapper.Evaluation.log_result"
+        ) as m_log_result, patch(
+            "starwhale.utils.config.load_swcli_config"
+        ) as m_config, patch.dict(
+            os.environ, {ENV_POD_NAME: "test-pod-1"}
+        ), requests_mock.Mocker() as rm:
+            m_config.return_value = {
+                "current_instance": "cloud",
+                "instances": {
+                    "cloud": {"uri": "https://localhost:80", "sw_token": "bar"},
+                    "local": {"uri": "local"},
+                },
+                "storage": {"root": tempfile.gettempdir()},
+            }
 
-        m_eval_log.assert_called_once()
-        status_file_path = os.path.join(_status_dir, "current")
-        assert os.path.exists(status_file_path)
-        assert "success" in open(status_file_path).read()
-        assert os.path.exists(os.path.join(_status_dir, "timeline"))
+            _logdir = JobStorage.local_run_dir(self.project, self.eval_id)
+            _run_dir = _logdir / RunSubDirType.RUNLOG / "ppl" / "0"
+            _status_dir = _run_dir / RunSubDirType.STATUS
+
+            m_summary.return_value = DatasetSummary(
+                rows=1,
+            )
+
+            m_ds.return_value = [
+                [
+                    DataRow(
+                        0,
+                        {
+                            "image": GrayscaleImage(link=Link("")),
+                            "label": 0,
+                            "annotation": "a",
+                        },
+                    )
+                ]
+            ]
+            m_ds_info.return_value = TabularDatasetInfo(mapping={"id": 0, "value": 1})
+
+            rm.request(
+                HTTPMethod.HEAD,
+                f"https://localhost:80/api/v1/project/starwhale/dataset/mnist/version/{self.dataset_version}",
+                json={"message": "found"},
+                status_code=HTTPStatus.OK,
+            )
+            rm.get(
+                "https://localhost:80/api/v1/project/starwhale/dataset/mnist",
+                json={
+                    "data": {
+                        "id": 11,
+                        "versionId": 22,
+                        "name": "mnist",
+                        "versionName": self.dataset_version,
+                    }
+                },
+            )
+            context = Context(
+                workdir=Path(),
+                project=Project("https://localhost:80/project/starwhale").full_uri,
+                version=self.eval_id,
+                dataset_uris=[
+                    f"https://localhost:80/project/starwhale/dataset/{self.dataset_uri_raw}"
+                ],
+                step="ppl",
+                index=0,
+            )
+            Context.set_runtime_context(context)
+
+            yield _status_dir, m_log_result
+
+    @contextmanager
+    def _mock_ppl_prepare_data(self) -> t.Any:
+        with patch(
+            "starwhale.base.uri.resource.Resource._refine_local_rc_info",
+        ) as _, patch(
+            "starwhale.base.uri.resource.Resource._refine_remote_rc_info",
+        ) as _, patch(
+            "starwhale.core.dataset.model.StandaloneDataset.summary"
+        ) as m_summary, patch(
+            "starwhale.core.dataset.tabular.DatastoreWrapperDataset.scan_id"
+        ) as m_scan_id, patch(
+            "starwhale.api._impl.dataset.Dataset.batch_iter"
+        ) as m_ds, patch(
+            "starwhale.api._impl.dataset.Dataset.info"
+        ) as m_ds_info, patch(
+            "starwhale.api._impl.wrapper.Evaluation.log_result"
+        ) as m_log_result:
+            _logdir = JobStorage.local_run_dir(self.project, self.eval_id)
+            _run_dir = _logdir / RunSubDirType.RUNLOG / "ppl" / "0"
+            _status_dir = _run_dir / RunSubDirType.STATUS
+
+            m_summary.return_value = DatasetSummary(
+                rows=1,
+            )
+
+            fname = "data_ubyte_0.swds_bin"
+            m_scan_id.return_value = [{"id": 0}]
+            m_ds.return_value = [
+                [
+                    DataRow(
+                        0,
+                        {
+                            "image": GrayscaleImage(link=Link(fname)),
+                            "label": 0,
+                            "annotation": "a",
+                        },
+                    )
+                ]
+            ]
+            m_ds_info.return_value = TabularDatasetInfo(mapping={"id": 0, "value": 1})
+
+            datastore_dir = DatasetStorage(
+                Resource(
+                    self.dataset_uri_raw,
+                    typ=ResourceType.dataset,
+                )
+            )
+            data_dir = datastore_dir.data_dir
+            ensure_dir(data_dir)
+            shutil.copyfile(os.path.join(self.swds_dir, fname), str(data_dir / fname))
+            ensure_dir(datastore_dir.loc)
+            ensure_file(datastore_dir.manifest_path, "")
+
+            context = Context(
+                workdir=Path(),
+                project=self.project,
+                version=self.eval_id,
+                dataset_uris=[self.dataset_uri_raw],
+                step="ppl",
+                index=0,
+            )
+            Context.set_runtime_context(context)
+
+            yield _status_dir, m_log_result
+
+    def test_ppl_with_batch_input(self) -> None:
+        with self._mock_ppl_prepare_data() as (status_dir, m_log_result):
+            with BatchDataHandler() as _handler:
+                _handler._starwhale_internal_run_predict()
+
+    def test_ppl_with_no_predict_log(self) -> None:
+        with self._mock_ppl_prepare_data() as (status_dir, m_log_result):
+            with NoLogHandler() as _handler:
+                _handler._starwhale_internal_run_predict()
+
+            m_log_result.assert_not_called()
+
+    def test_ppl_with_exception(self) -> None:
+        with self._mock_ppl_prepare_data() as (status_dir, m_log_result):
+            with self.assertRaisesRegex(Exception, "predict test exception"):
+                with ExceptionHandler() as _handler:
+                    _handler._starwhale_internal_run_predict()
+
+            status_file_path = os.path.join(status_dir, "current")
+            assert os.path.exists(status_file_path)
+            assert "failed" in open(status_file_path).read()
+
+    def test_ppl_with_plain_mode(self) -> None:
+        with self._mock_ppl_prepare_data() as (status_dir, m_log_result):
+            with PlainHandler() as _handler:
+                _handler._starwhale_internal_run_predict()
+
+            log_result = m_log_result.call_args[0][0]
+            assert log_result["id"].startswith("self/mnist_")
+            assert log_result["_mode"] == "plain"
+            assert log_result["_index"] == 0
+            assert log_result["output"] == {"result": "ok"}
+            assert isinstance(log_result["input/image"], GrayscaleImage)
+            assert log_result["input/label"] == 0
+            assert "input/annotation" not in log_result
+
+            status_file_path = os.path.join(status_dir, "current")
+            assert os.path.exists(status_file_path)
+            assert "success" in open(status_file_path).read()
+
+    def test_ppl_with_plain_mode_in_cloud(self) -> None:
+        with self._mock_ppl_prepare_data_in_cloud() as (status_dir, m_log_result):
+            with PlainHandler() as _handler:
+                _handler._starwhale_internal_run_predict()
+
+            log_result = m_log_result.call_args[0][0]
+            assert log_result["id"].startswith("11_")
+            assert log_result["_mode"] == "plain"
+            assert log_result["_index"] == 0
+            assert log_result["output"] == {"result": "ok"}
+            assert isinstance(log_result["input/image"], GrayscaleImage)
+            assert log_result["input/label"] == 0
+            assert "input/annotation" not in log_result
+
+    def test_ppl(self) -> None:
+        with self._mock_ppl_prepare_data() as (status_dir, m_log_result):
+            with SimpleHandler() as _handler:
+                _handler._starwhale_internal_run_predict()
+
+            m_log_result.assert_called_once()
+            status_file_path = os.path.join(status_dir, "current")
+            assert os.path.exists(status_file_path)
+            assert "success" in open(status_file_path).read()
+            assert os.path.exists(os.path.join(status_dir, "timeline"))
 
     @patch.dict(os.environ, {})
     @patch("starwhale.core.dataset.tabular.DatastoreWrapperDataset.scan_id")
     @patch("starwhale.core.dataset.tabular.DatastoreWrapperDataset.scan")
     @patch("starwhale.core.dataset.model.StandaloneDataset.summary")
+    @patch(
+        "starwhale.base.uri.resource.Resource._refine_remote_rc_info",
+        MagicMock(),
+    )
+    @patch(
+        "starwhale.base.uri.resource.Resource._refine_local_rc_info",
+        MagicMock(),
+    )
     def test_deserializer(
         self, m_summary: MagicMock, m_scan: MagicMock, m_scan_id: MagicMock
     ) -> None:
@@ -229,12 +500,12 @@ class TestModelPipelineHandler(TestCase):
             def cmp(self, _data_loader: t.Any) -> t.Any:
                 data = [i for i in _data_loader]
                 assert len(data) == 1
-                (x, y, z) = data[0]["result"]
+                (x, y, z) = data[0]["output"]
                 assert x == builtin_data
                 assert np.array_equal(y, np_data)
                 assert torch.equal(z, tensor_data)
 
-                assert label_data == data[0]["ds_data"]["label"]
+                assert label_data == data[0]["input"]["label"]
 
         m_summary.return_value = DatasetSummary(
             rows=1,
@@ -264,7 +535,12 @@ class TestModelPipelineHandler(TestCase):
         ]
         m_scan_id.return_value = [{"id": 0}]
 
-        datastore_dir = DatasetStorage(URI(self.dataset_uri_raw, URIType.DATASET))
+        datastore_dir = DatasetStorage(
+            Resource(
+                self.dataset_uri_raw,
+                typ=ResourceType.dataset,
+            )
+        )
         ensure_file(datastore_dir.manifest_path, "", parents=True)
 
         context = Context(
@@ -278,7 +554,7 @@ class TestModelPipelineHandler(TestCase):
         Context.set_runtime_context(context)
         # mock
         with Dummy(flush_result=True) as _handler:
-            _handler._starwhale_internal_run_ppl()
+            _handler._starwhale_internal_run_predict()
 
         context = Context(
             workdir=Path(),
@@ -290,7 +566,96 @@ class TestModelPipelineHandler(TestCase):
         )
         Context.set_runtime_context(context)
         with Dummy() as _handler:
-            _handler._starwhale_internal_run_cmp()
+            _handler._starwhale_internal_run_evaluate()
+
+    def test_predict_ingest(self) -> None:
+        class DummyWithVarKeyword(PipelineHandler):
+            def ppl(self, data: t.Any, **kw: t.Any) -> t.Any:
+                assert data.label == 1
+                assert isinstance(data, dict)
+                assert "index" in kw["external"]
+                assert kw["external"]["dataset_uri"].name == "mnist"
+                assert kw["external"]["dataset_uri"].version == "123456"
+
+        class DummyWithVarPositional(PipelineHandler):
+            def ppl(self, *args: t.Any, **kw: t.Any) -> t.Any:
+                assert args[0].label == 1
+                assert "index" in kw["external"]
+                assert "context" in kw["external"]
+
+        class DummyWithOnlyData(PipelineHandler):
+            def predict(self, data: t.Any) -> t.Any:
+                assert data.label == 1
+
+        class DummyWithOnlyVarKeyword(PipelineHandler):
+            def predict(self, **kw: t.Any) -> t.Any:
+                assert kw["data"].label == 1
+                assert "index" in kw["external"]
+
+        class DummyWithOnlyVarPositional(PipelineHandler):
+            def predict(self, *args: t.Any) -> t.Any:
+                assert args[0].label == 1
+                assert "index" in args[1]
+
+        class DummyWithKeyword(PipelineHandler):
+            def predict(self, data: t.Any, external: t.Any) -> t.Any:
+                assert data.label == 1
+                assert "index" in external
+
+        class DummyWithDecoratorOnlyData(PipelineHandler):
+            @http_retry(attempts=3)
+            def predict(self, data: t.Any) -> t.Any:
+                assert data.label == 1
+
+        class DummyWithDecoratorKeyword(PipelineHandler):
+            @http_retry(attempts=3)
+            @pass_context
+            def predict(self, data: t.Any, **kw: t.Any) -> t.Any:
+                assert data.label == 1
+                assert "index" in kw["external"]
+                assert isinstance(kw["context"], Context)
+
+        class DummyWithoutAny(PipelineHandler):
+            ...
+
+        class DummyWithTwoHandlers(PipelineHandler):
+            def ppl(self, data: t.Any, **kw: t.Any) -> t.Any:
+                ...
+
+            def predict(self, data: t.Any, external: t.Any) -> t.Any:
+                ...
+
+        handlers = [
+            DummyWithDecoratorOnlyData,
+            DummyWithDecoratorKeyword,
+            DummyWithVarKeyword,
+            DummyWithOnlyVarKeyword,
+            DummyWithKeyword,
+            DummyWithVarPositional,
+            DummyWithOnlyData,
+            DummyWithOnlyVarPositional,
+        ]
+        Context.set_runtime_context(Context(version="123", project="test"))
+        uri = Resource("mnist/version/123456", typ=ResourceType.dataset, refine=False)
+        for h in handlers:
+            h()._do_predict(
+                data=DataRow._Features({"label": 1}),
+                index=0,
+                index_with_dataset="0",
+                dataset_info=TabularDatasetInfo(),
+                dataset_uri=uri,
+            )
+
+        with self.assertRaisesRegex(
+            ParameterError, "predict and ppl cannot be defined at the same time"
+        ):
+            DummyWithTwoHandlers()._do_predict({}, 1, "1", TabularDatasetInfo(), uri)
+
+        with self.assertRaisesRegex(
+            ParameterError,
+            "predict or ppl must be defined, predict function is recommended",
+        ):
+            DummyWithoutAny()._do_predict({}, 1, "1", TabularDatasetInfo(), uri)
 
 
 class TestEvaluationLogStore(BaseTestCase):

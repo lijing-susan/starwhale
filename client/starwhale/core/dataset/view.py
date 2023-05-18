@@ -1,4 +1,5 @@
-import sys
+from __future__ import annotations
+
 import typing as t
 from pathlib import Path
 
@@ -8,9 +9,10 @@ from rich.pretty import Pretty
 
 from starwhale.utils import console, pretty_bytes, pretty_merge_list
 from starwhale.consts import DEFAULT_PAGE_IDX, DEFAULT_PAGE_SIZE, SHORT_VERSION_CNT
-from starwhale.base.uri import URI
-from starwhale.base.type import URIType, InstanceType
+from starwhale.base.type import DatasetChangeMode
 from starwhale.base.view import BaseTermView
+from starwhale.base.uri.project import Project
+from starwhale.base.uri.resource import Resource, ResourceType
 from starwhale.core.dataset.type import DatasetConfig
 from starwhale.core.runtime.process import Process as RuntimeProcess
 
@@ -18,11 +20,13 @@ from .model import Dataset
 
 
 class DatasetTermView(BaseTermView):
-    def __init__(self, dataset_uri: str) -> None:
+    def __init__(self, dataset_uri: str | Resource) -> None:
         super().__init__()
 
-        self.raw_uri = dataset_uri
-        self.uri = URI(dataset_uri, expected_type=URIType.DATASET)
+        if isinstance(dataset_uri, Resource):
+            self.uri = dataset_uri
+        else:
+            self.uri = Resource(dataset_uri, typ=ResourceType.dataset)
         self.dataset = Dataset.get_dataset(self.uri)
 
     @BaseTermView._simple_action_print
@@ -36,26 +40,28 @@ class DatasetTermView(BaseTermView):
     @BaseTermView._pager
     @BaseTermView._header
     def history(self, fullname: bool = False) -> t.List[t.Dict[str, t.Any]]:
-        fullname = fullname or self.uri.instance_type == InstanceType.CLOUD
+        fullname = fullname or self.uri.instance.is_cloud
         return self._print_history(
             title="Dataset History List",
             history=self.dataset.history(),
             fullname=fullname,
         )
 
-    @BaseTermView._header
-    def info(self, fullname: bool = False) -> None:
-        self._print_info(self.dataset.info(), fullname=fullname)
+    def info(self) -> None:
+        info = self.dataset.info()
+        if info:
+            console.print(Pretty(info, expand_all=True))
+        else:
+            console.print(f":bird: Dataset info not found: [bold red]{self.uri}[/]")
 
     def summary(self) -> None:
-        _summary = self.dataset.summary()
-        if _summary:
-            console.print(Pretty(_summary.asdict(), expand_all=True))
+        summary = self.dataset.summary()
+        if summary:
+            console.print(Pretty(summary.asdict(), expand_all=True))
         else:
             console.print(":tea: not found dataset summary")
-            sys.exit(1)
 
-    def _do_diff(self, compare_uri: URI) -> t.Dict[str, t.Any]:
+    def _do_diff(self, compare_uri: Resource) -> t.Dict[str, t.Any]:
         r = self.dataset.diff(compare_uri)
         r["diff_merged_output"] = {
             "added": pretty_merge_list(r["diff"]["added"]),
@@ -66,7 +72,7 @@ class DatasetTermView(BaseTermView):
         }
         return r
 
-    def diff(self, compare_uri: URI, show_details: bool = False) -> None:
+    def diff(self, compare_uri: Resource, show_details: bool = False) -> None:
         _print_dict: t.Callable[[t.Dict], str] = lambda _s: "\n".join(
             [f"{k}:{v}" for k, v in _s.items()]
         )
@@ -133,7 +139,7 @@ class DatasetTermView(BaseTermView):
     @classmethod
     def list(
         cls,
-        project_uri: t.Union[str, URI] = "",
+        project_uri: t.Union[str, Project] = "",
         fullname: bool = False,
         show_removed: bool = False,
         page: int = DEFAULT_PAGE_IDX,
@@ -142,12 +148,12 @@ class DatasetTermView(BaseTermView):
     ) -> t.Tuple[t.List[t.Dict[str, t.Any]], t.Dict[str, t.Any]]:
         filters = filters or []
         if isinstance(project_uri, str):
-            _uri = URI(project_uri, expected_type=URIType.PROJECT)
+            _uri = Project(project_uri)
         else:
             _uri = project_uri
 
         cls.must_have_project(_uri)
-        fullname = fullname or (_uri.instance_type == InstanceType.CLOUD)
+        fullname = fullname or _uri.instance.is_cloud
         _datasets, _pager = Dataset.list(_uri, page, size, filters)
         _data = BaseTermView.list_data(_datasets, show_removed, fullname)
         return _data, _pager
@@ -165,7 +171,7 @@ class DatasetTermView(BaseTermView):
             dataset_uri = cls.prepare_build_bundle(
                 project=config.project_uri,
                 bundle_name=config.name,
-                typ=URIType.DATASET,
+                typ=ResourceType.dataset,
                 auto_gen_version=False,
             )
             ds = Dataset.get_dataset(dataset_uri)
@@ -176,9 +182,17 @@ class DatasetTermView(BaseTermView):
         cls,
         src_uri: str,
         dest_uri: str,
+        mode: DatasetChangeMode = DatasetChangeMode.PATCH,
         dest_local_project_uri: str = "",
+        force: bool = False,
     ) -> None:
-        Dataset.copy(src_uri, dest_uri, dest_local_project_uri)
+        Dataset.copy(
+            src_uri=Resource(src_uri, typ=ResourceType.dataset),
+            dest_uri=dest_uri,
+            mode=mode,
+            dest_local_project_uri=dest_local_project_uri,
+            force=force,
+        )
         console.print(":clap: copy done")
 
     @BaseTermView._header
@@ -260,8 +274,8 @@ class DatasetTermViewJson(DatasetTermView):
         )
         cls.pretty_json(_datasets)
 
-    def info(self, fullname: bool = False) -> None:
-        self.pretty_json(self.get_info_data(self.dataset.info(), fullname))
+    def info(self) -> None:
+        self.pretty_json(self.dataset.info())
 
     def head(self, rows: int, show_raw_data: bool = False) -> None:
         from starwhale.base.mixin import _do_asdict_convert
@@ -269,7 +283,7 @@ class DatasetTermViewJson(DatasetTermView):
         info = self.dataset.head(rows, show_raw_data)
         self.pretty_json(_do_asdict_convert(info))
 
-    def diff(self, compare_uri: URI, show_details: bool = False) -> None:
+    def diff(self, compare_uri: Resource, show_details: bool = False) -> None:
         r = self._do_diff(compare_uri)
         if not show_details:
             r.pop("diff", None)
@@ -277,7 +291,7 @@ class DatasetTermViewJson(DatasetTermView):
         self.pretty_json(r)
 
     def history(self, fullname: bool = False) -> None:
-        fullname = fullname or self.uri.instance_type == InstanceType.CLOUD
+        fullname = fullname or self.uri.instance.is_cloud
         self.pretty_json(
             BaseTermView.get_history_data(self.dataset.history(), fullname)
         )

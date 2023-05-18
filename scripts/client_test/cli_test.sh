@@ -26,8 +26,22 @@ else
   python3 -m pip install -e client
 fi
 swcli --version
+
+ls -lah ${REPO_PATH}/client/dist
+ls -lah ${WORK_DIR}/client/dist
+
+if [ -f "${REPO_PATH}/client/dist/starwhale-100.0.0-py3-none-any.whl" ]; then
+    SRC_PATH=${REPO_PATH}/client/dist/starwhale-100.0.0-py3-none-any.whl
+else
+    python3 -m pip install -r client/requirements-install.txt
+    make -C client build-wheel
+    SRC_PATH=${WORK_DIR}/client/dist/starwhale-${PYPI_RELEASE_VERSION:=0.0.0.dev0}-py3-none-any.whl
+fi
+cp ${SRC_PATH} ${WORK_DIR}/scripts/example/starwhale-0.0.0.dev0-py3-none-any.whl
+
 popd
 
 bash "$SCRIPT_DIR"/update_controller_setting.sh
-python3 "$SCRIPT_DIR"/cli_test.py "$1"
-
+for i in $@; do
+    python3 "$SCRIPT_DIR"/cli_test.py $i || exit 1
+done

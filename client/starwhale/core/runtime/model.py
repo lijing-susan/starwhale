@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import os
+import sys
 import shutil
 import typing as t
 import platform
 import tempfile
+import subprocess
 from abc import ABCMeta
 from enum import Enum, unique
 from pathlib import Path
+from functools import partial
 from collections import defaultdict
 
 import yaml
 import jinja2
 from fs import open_fs
-from loguru import logger
 from fs.copy import copy_fs, copy_file
 from fs.tarfs import TarFS
 from typing_extensions import Protocol
@@ -50,7 +52,6 @@ from starwhale.consts import (
 )
 from starwhale.version import STARWHALE_VERSION
 from starwhale.base.tag import StandaloneTag
-from starwhale.base.uri import URI
 from starwhale.utils.fs import (
     move_dir,
     empty_dir,
@@ -60,7 +61,6 @@ from starwhale.utils.fs import (
     get_path_created_time,
 )
 from starwhale.base.type import (
-    URIType,
     BundleType,
     InstanceType,
     DependencyType,
@@ -98,6 +98,7 @@ from starwhale.utils.venv import (
     get_python_version_by_bin,
     render_python_env_activate,
     get_user_runtime_python_bin,
+    pip_compatible_dependencies_check,
 )
 from starwhale.base.bundle import BaseBundle, LocalStorageBundleMixin
 from starwhale.utils.error import (
@@ -112,6 +113,8 @@ from starwhale.utils.error import (
 )
 from starwhale.utils.progress import run_with_progress_bar
 from starwhale.base.bundle_copy import BundleCopy
+from starwhale.base.uri.project import Project as ProjectURI
+from starwhale.base.uri.resource import Resource, ResourceType
 
 from .store import RuntimeStorage
 
@@ -224,6 +227,29 @@ class BaseDependency(Protocol):
         ...
 
 
+@unique
+class RuntimeRestoreStatus(Enum):
+    restoring = "restoring"
+    success = "success"
+    failed = "failed"
+    undefined = "undefined"
+
+    @classmethod
+    def mark(cls, status: RuntimeRestoreStatus, rootdir: Path) -> None:
+        ensure_file(rootdir / ".runtime_restore_status", status.value, parents=True)
+
+    @classmethod
+    def get(cls, rootdir: Path) -> RuntimeRestoreStatus:
+        fpath = rootdir / ".runtime_restore_status"
+        if not fpath.exists():
+            return cls.undefined
+        else:
+            try:
+                return cls(fpath.read_text().strip())
+            except ValueError:
+                return cls.undefined
+
+
 class NativeFileDependency(ASDictMixin, BaseDependency):
     def __init__(self, deps: t.List[t.Dict[str, str]]) -> None:
         if isinstance(deps, list):
@@ -300,12 +326,12 @@ class WheelDependency(ASDictMixin, BaseDependency):
 
     def conda_install(self, src_dir: Path, env_dir: Path, configs: t.Dict) -> None:
         for path in self._get_wheels(src_dir):
-            logger.debug(f"conda run pip install: {path}")
+            console.debug(f"conda run pip install: {path}")
             conda_install_req(req=path, prefix_path=env_dir, configs=configs)
 
     def venv_install(self, src_dir: Path, env_dir: Path, configs: t.Dict) -> None:
         for path in self._get_wheels(src_dir):
-            logger.debug(f"venv pip install: {path}")
+            console.debug(f"venv pip install: {path}")
             venv_install_req(
                 env_dir, path, pip_config=configs.get("pip")
             )  # type:ignore
@@ -332,7 +358,7 @@ class CondaPkgDependency(ASDictMixin, BaseDependency):
         _conda_pkgs = " ".join([repr(_p) for _p in self.deps if _p])
         _conda_pkgs = _conda_pkgs.strip()
         if _conda_pkgs:
-            logger.debug(f"conda install: {_conda_pkgs}")
+            console.debug(f"conda install: {_conda_pkgs}")
             conda_install_req(
                 req=_conda_pkgs,
                 prefix_path=env_dir,
@@ -341,7 +367,7 @@ class CondaPkgDependency(ASDictMixin, BaseDependency):
             )
 
     def venv_install(self, src_dir: Path, env_dir: Path, configs: t.Dict) -> None:
-        logger.warning("no support install conda pkg in the venv environment")
+        console.warning("no support install conda pkg in the venv environment")
 
 
 class CondaEnvFileDependency(ASDictMixin, BaseDependency):
@@ -371,7 +397,7 @@ class CondaEnvFileDependency(ASDictMixin, BaseDependency):
         conda_env_update(env_fpath=env_fpath, target_env=env_dir)
 
     def venv_install(self, src_dir: Path, env_dir: Path, configs: t.Dict) -> None:
-        logger.warning(
+        console.warning(
             "no support install/update conda environment file in the venv environment"
         )
 
@@ -400,12 +426,12 @@ class PipPkgDependency(ASDictMixin, BaseDependency):
     def conda_install(self, src_dir: Path, env_dir: Path, configs: t.Dict) -> None:
         # TODO: merge deps
         for pkg in self._get_pkgs():
-            logger.debug(f"conda run pip install: {pkg}")
+            console.debug(f"conda run pip install: {pkg}")
             conda_install_req(req=pkg, prefix_path=env_dir, configs=configs)
 
     def venv_install(self, src_dir: Path, env_dir: Path, configs: t.Dict) -> None:
         for pkg in self._get_pkgs():
-            logger.debug(f"venv pip install: {pkg}")
+            console.debug(f"venv pip install: {pkg}")
             venv_install_req(env_dir, pkg, pip_config=configs.get("pip"))  # type:ignore
 
 
@@ -496,7 +522,7 @@ class Dependencies(ASDictMixin):
                 self._unparsed.append(d)
 
         if self._unparsed:
-            logger.warning(f"unparsed dependencies:{self._unparsed}")
+            console.warning(f"unparsed dependencies:{self._unparsed}")
 
     def __str__(self) -> str:
         return f"Starwhale Runtime Dependencies: {len(self.deps)}, unparsed: {len(self._unparsed)}"
@@ -626,18 +652,18 @@ class Runtime(BaseBundle, metaclass=ABCMeta):
         StandaloneRuntime.restore(workdir, isolated_env_dir)
 
     @classmethod
-    def get_runtime(cls, uri: URI) -> Runtime:
+    def get_runtime(cls, uri: Resource) -> Runtime:
         _cls = cls._get_cls(uri)
         return _cls(uri)
 
     @classmethod
     def _get_cls(  # type: ignore
         cls,
-        uri: URI,
+        uri: Resource,
     ) -> t.Union[t.Type[StandaloneRuntime], t.Type[CloudRuntime]]:
-        if uri.instance_type == InstanceType.STANDALONE:
+        if uri.instance.is_local:
             return StandaloneRuntime
-        elif uri.instance_type == InstanceType.CLOUD:
+        elif uri.instance.is_cloud:
             return CloudRuntime
         else:
             raise NoSupportError(f"runtime uri:{uri}")
@@ -648,7 +674,7 @@ class Runtime(BaseBundle, metaclass=ABCMeta):
     @classmethod
     def copy(
         cls,
-        src_uri: str,
+        src_uri: Resource,
         dest_uri: str,
         force: bool = False,
         dest_local_project_uri: str = "",
@@ -656,14 +682,14 @@ class Runtime(BaseBundle, metaclass=ABCMeta):
         bc = BundleCopy(
             src_uri,
             dest_uri,
-            URIType.RUNTIME,
+            ResourceType.runtime,
             force,
             dest_local_project_uri=dest_local_project_uri,
         )
         bc.do()
 
     @classmethod
-    def activate(cls, uri: URI, force_restore: bool = False) -> None:
+    def activate(cls, uri: Resource, force_restore: bool = False) -> None:
         StandaloneRuntime.activate(uri, force_restore)
 
     @classmethod
@@ -740,13 +766,13 @@ class Runtime(BaseBundle, metaclass=ABCMeta):
 
 
 class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
-    def __init__(self, uri: URI) -> None:
+    def __init__(self, uri: Resource) -> None:
         super().__init__(uri)
         self.typ = InstanceType.STANDALONE
         self.store = RuntimeStorage(uri)
         self.tag = StandaloneTag(uri)
         self._manifest: t.Dict[str, t.Any] = {}
-        self._version = uri.object.version
+        self._version = uri.version
         self._detected_sw_version: str = ""
 
     def info(self) -> t.Dict[str, t.Any]:
@@ -755,14 +781,17 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
             return ret
 
         ret["basic"] = {
-            "name": self.uri.object.name,
-            "uri": self.uri.full_uri,
-            "project": self.uri.project,
+            "name": self.uri.name,
+            "uri": str(self.uri),
+            "project": self.uri.project.name,
             "snapshot_workdir": str(self.store.snapshot_workdir),
             "bundle_path": str(self.store.bundle_path),
-            "version": self.uri.object.version,
+            "version": self.uri.version,
             "tags": StandaloneTag(self.uri).list(),
         }
+
+        ret["basic"]["version"] = self.uri.version
+        ret["basic"]["tags"] = StandaloneTag(self.uri).list()
 
         if self.store.snapshot_workdir.exists():
             ret["manifest"] = self.store.manifest
@@ -804,9 +833,7 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
 
     def recover(self, force: bool = False) -> t.Tuple[bool, str]:
         # TODO: support short version to recover, today only support full-version
-        dest_path = (
-            self.store.bundle_dir / f"{self.uri.object.version}{BundleType.RUNTIME}"
-        )
+        dest_path = self.store.bundle_dir / f"{self.uri.version}{BundleType.RUNTIME}"
         _ok, _reason = move_dir(self.store.recover_loc, dest_path, force)
         _ok2, _reason2 = True, ""
         if self.store.recover_snapshot_workdir.exists():
@@ -888,6 +915,18 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
         else:
             pybin = get_user_runtime_python_bin(mode)
             env_use_shell = True
+
+        try:
+            console.print(
+                ":wheelchair: verify the installed packages have compatible dependencies"
+            )
+            pip_compatible_dependencies_check(pybin)
+        except subprocess.CalledProcessError as e:
+            console.print(
+                f":skull: failed to verify compatible dependencies for the {pybin} environment: \n{e.output.strip()}",
+                style="bold red",
+            )
+            sys.exit(1)
 
         python_version = get_python_version_by_bin(pybin)
         workdir = Path(tempfile.mkdtemp(suffix="starwhale-runtime-build-"))
@@ -1041,12 +1080,12 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
             RuntimeArtifactType.FILES: [],
         }
 
-        logger.info("[step:copy-wheels]start to copy wheels...")
+        console.info("[step:copy-wheels]start to copy wheels...")
         ensure_dir(self.store.snapshot_workdir / RuntimeArtifactType.WHEELS)
         for _fname in config.dependencies._wheels:
             _fpath = workdir / _fname
             if not _fpath.exists():
-                logger.warning(f"not found wheel: {_fpath}")
+                console.warning(f"not found wheel: {_fpath}")
                 continue
 
             _dest = f"{RuntimeArtifactType.WHEELS}/{_fname.lstrip('/')}"
@@ -1058,13 +1097,13 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
                 _dest,
             )
 
-        logger.info("[step:copy-files]start to copy files...")
+        console.info("[step:copy-files]start to copy files...")
         ensure_dir(self.store.snapshot_workdir / RuntimeArtifactType.FILES)
         for _f in config.dependencies._files:
             _src = workdir / _f["src"]
             _dest = f"{RuntimeArtifactType.FILES}/{_f['src'].lstrip('/')}"
             if not _src.exists():
-                logger.warning(f"not found src-file: {_src}")
+                console.warning(f"not found src-file: {_src}")
                 continue
 
             self._manifest["artifacts"][RuntimeArtifactType.FILES].append(_f)
@@ -1076,13 +1115,13 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
                 ensure_dir((self.store.snapshot_workdir / _dest).parent)
                 copy_file(workdir_fs, _f["src"], snapshot_fs, _dest)
 
-        logger.info("[step:copy-deps]start to copy pip/conda requirement files")
+        console.info("[step:copy-deps]start to copy pip/conda requirement files")
         ensure_dir(self.store.snapshot_workdir / RuntimeArtifactType.DEPEND)
 
         for _fname in config.dependencies._conda_files + config.dependencies._pip_files:
             _fpath = workdir / _fname
             if not _fpath.exists():
-                logger.warning(f"not found dependencies: {_fpath}")
+                console.warning(f"not found dependencies: {_fpath}")
                 continue
 
             _dest = f"{RuntimeArtifactType.DEPEND}/{_fname.lstrip('/')}"
@@ -1200,7 +1239,7 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
             "conda_files": deps._conda_files,
         }
 
-        logger.info("[step:dep]finish dump dep")
+        console.info("[step:dep]finish dump dep")
 
         if download_all_deps:
             packaged = package_python_env(
@@ -1213,7 +1252,7 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
             self._manifest["dependencies"]["local_packaged_env"] = packaged
 
     def _prepare_snapshot(self) -> None:
-        logger.info("[step:prepare-snapshot]prepare runtime snapshot dirs...")
+        console.info("[step:prepare-snapshot]prepare runtime snapshot dirs...")
 
         # TODO: graceful clear?
         if self.store.snapshot_workdir.exists():
@@ -1235,7 +1274,7 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
     @classmethod
     def list(
         cls,
-        project_uri: URI,
+        project_uri: ProjectURI,
         page: int = DEFAULT_PAGE_IDX,
         size: int = DEFAULT_PAGE_SIZE,
         filters: t.Optional[t.Union[t.Dict[str, t.Any], t.List[str]]] = None,
@@ -1243,7 +1282,7 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
         filters = filters or {}
         rs = defaultdict(list)
         for _bf in RuntimeStorage.iter_all_bundles(
-            project_uri, bundle_type=BundleType.RUNTIME, uri_type=URIType.RUNTIME
+            project_uri, bundle_type=BundleType.RUNTIME, uri_type=ResourceType.runtime
         ):
             if not cls.do_bundle_filter(_bf, filters):
                 continue
@@ -1270,20 +1309,20 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
         cls,
         workdir: t.Union[Path, str],
         name: str,
-        uri: URI,
+        uri: Resource,
         force: bool = False,
         disable_restore: bool = False,
     ) -> None:
         workdir = Path(workdir).absolute()
         ensure_dir(workdir)
 
-        if uri.instance_type == InstanceType.CLOUD:
+        if uri.instance.is_cloud:
             console.print(f":cloud: copy runtime from {uri} to local")
             _dest_project_uri = f"{STANDALONE_INSTANCE}/project/{DEFAULT_PROJECT}"
-            cls.copy(uri.full_uri, _dest_project_uri, force=force)
-            uri = URI(
-                f"{_dest_project_uri}/runtime/{uri.object.name}/version/{uri.object.version}",
-                expected_type=URIType.RUNTIME,
+            cls.copy(uri, _dest_project_uri, force=force)
+            uri = Resource(
+                f"{_dest_project_uri}/runtime/{uri.name}/version/{uri.version}",
+                typ=ResourceType.runtime,
             )
 
         sw_auto_d = workdir / SW_AUTO_DIRNAME
@@ -1319,7 +1358,7 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
                 raise NotFoundError(src)
 
             if dest.exists() and not force:
-                logger.warning(f"{dest} existed, skip copy")
+                console.warning(f"{dest} existed, skip copy")
 
             ensure_dir(dest.parent)
             shutil.copy(str(src), str(dest))
@@ -1403,8 +1442,8 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
             )
 
     @classmethod
-    def activate(cls, uri: URI, force_restore: bool = False) -> None:
-        if uri.instance_type != InstanceType.STANDALONE:
+    def activate(cls, uri: Resource, force_restore: bool = False) -> None:
+        if not uri.instance.is_local:
             raise NoSupportError(f"{uri} is not the standalone instance")
 
         _rt = StandaloneRuntime(uri)
@@ -1415,7 +1454,10 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
 
         mode = load_yaml(_rt.store.manifest_path)["environment"]["mode"]
         prefix_path = _rt.store.export_dir / mode
-        if not prefix_path.exists() or force_restore:
+        _rrs = RuntimeRestoreStatus
+        is_invalid_status = _rrs.get(prefix_path) in (_rrs.failed, _rrs.restoring)
+
+        if force_restore or not prefix_path.exists() or is_invalid_status:
             console.print(f":safety_vest: restore runtime into {workdir}")
             cls.restore(workdir)
 
@@ -1536,7 +1578,12 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
             console.print(
                 f":cat_face: use conda env prefix({prefix_path}) to export environment..."
             )
-            conda_export(temp_lock_path, prefix=prefix_path)
+            conda_export(
+                temp_lock_path,
+                prefix=prefix_path,
+                include_editable=include_editable,
+                include_local_wheel=include_local_wheel,
+            )
         elif mode == PythonRunEnv.VENV:
             if not check_valid_venv_prefix(prefix_path):
                 raise FormatError(f"venv prefix: {prefix_path}")
@@ -1652,7 +1699,7 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
             _pip = _manifest["configs"].get("pip", {})
             _out = _template.render(
                 base_image=_manifest["base_image"],
-                runtime_name=self.uri.object.name,
+                runtime_name=self.uri.name,
                 runtime_version=_manifest["version"],
                 pypi_index_url=_pip.get("index_url", ""),
                 pypi_extra_index_url=" ".join(_pip.get("extra_index_url", [])),
@@ -1806,7 +1853,17 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
             ]
         )
 
-        run_with_progress_bar("runtime restore...", operations)
+        _status = RuntimeRestoreStatus
+        _mark = partial(_status.mark, rootdir=isolated_env_dir)
+
+        try:
+            _mark(_status.restoring)
+            run_with_progress_bar("runtime restore...", operations)
+        except Exception:
+            _mark(_status.failed)
+            raise
+        else:
+            _mark(_status.success)
 
     @staticmethod
     def _install_dependencies_with_runtime_yaml(
@@ -1826,7 +1883,7 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
         deps_config = Dependencies(runtime_yaml.get("dependencies", []))
         for dep in deps_config.deps:
             if dep.kind in skip_deps:
-                logger.debug(f"skip {dep} to install")
+                console.debug(f"skip {dep} to install")
                 continue
 
             _func = (
@@ -1862,11 +1919,6 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
             # We assume the equation in the runtime auto-lock build mode:
             #   the lock files = pip_pkg + pip_req_file + conda_pkg + conda_env_file
             raw_deps = []
-            for dep in deps["raw_deps"]:
-                kind = DependencyType(dep["kind"])
-                if kind in (DependencyType.NATIVE_FILE, DependencyType.WHEEL):
-                    raw_deps.append(dep)
-
             for lf in lock_files:
                 if lf.endswith(RuntimeLockFileType.CONDA):
                     raw_deps.append({"deps": lf, "kind": DependencyType.CONDA_ENV_FILE})
@@ -1876,6 +1928,12 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
                     raise NoSupportError(
                         f"lock file({lf}) cannot be converted into raw_deps"
                     )
+
+            # NATIVE_FILE and WHEEL must be installed after CONDA_ENV_FILE or PIP_REQ_FILE installation.
+            for dep in deps["raw_deps"]:
+                kind = DependencyType(dep["kind"])
+                if kind in (DependencyType.NATIVE_FILE, DependencyType.WHEEL):
+                    raw_deps.append(dep)
         else:
             raw_deps = deps["raw_deps"]
 
@@ -1952,7 +2010,7 @@ class StandaloneRuntime(Runtime, LocalStorageBundleMixin):
 
 
 class CloudRuntime(CloudBundleModelMixin, Runtime):
-    def __init__(self, uri: URI) -> None:
+    def __init__(self, uri: Resource) -> None:
         super().__init__(uri)
         self.typ = InstanceType.CLOUD
 
@@ -1960,7 +2018,7 @@ class CloudRuntime(CloudBundleModelMixin, Runtime):
     @ignore_error(({}, {}))
     def list(
         cls,
-        project_uri: URI,
+        project_uri: ProjectURI,
         page: int = DEFAULT_PAGE_IDX,
         size: int = DEFAULT_PAGE_SIZE,
         filter_dict: t.Optional[t.Dict[str, t.Any]] = None,
@@ -1968,5 +2026,5 @@ class CloudRuntime(CloudBundleModelMixin, Runtime):
         filter_dict = filter_dict or {}
         crm = CloudRequestMixed()
         return crm._fetch_bundle_all_list(
-            project_uri, URIType.RUNTIME, page, size, filter_dict
+            project_uri, ResourceType.runtime, page, size, filter_dict
         )

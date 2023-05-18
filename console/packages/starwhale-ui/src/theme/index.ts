@@ -76,7 +76,10 @@ const overrides: {
         buttonTertiaryText: customPrimaryColors.primary,
         buttonDisabledFill: customPrimaryColors.secondary,
         buttonDisabledText: color(customPrimaryColors.primary).alpha(0.3).toString(),
-        // ----------- others -----------
+        calendarDayBackgroundSelectedHighlighted: customPrimaryColors.primary,
+        calendarDayBackgroundPseudoSelectedHighlighted: customPrimaryColors.secondary,
+        tooltipBackground: customPrimaryColors.fill,
+        tooltipText: customPrimaryColors.fontPrimary,
         borderSelected: customPrimaryColors.primary,
         tickBorder: customPrimaryColors.dividerSecondary,
         tickFill: customPrimaryColors.fill,

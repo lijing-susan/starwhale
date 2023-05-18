@@ -193,7 +193,7 @@ def ppl_pre(videos: t.List[Video], sampler, transforms) -> torch.Tensor:
 
 class UCF101PipelineHandler(PipelineHandler):
     def __init__(self):
-        super().__init__(ignore_error=False, ppl_batch_size=5)
+        super().__init__(ignore_error=False, predict_batch_size=5)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = load_model(self.device)
         self.sampler = RandomSampling()
@@ -209,7 +209,7 @@ class UCF101PipelineHandler(PipelineHandler):
         )
 
     @torch.no_grad()
-    def ppl(self, data_batch: t.List[dict], **kw: t.Any) -> t.Any:
+    def ppl(self, data_batch: t.List[dict]) -> t.Any:
         _frames_tensor = ppl_pre(
             videos=[data["video"] for data in data_batch],
             sampler=self.sampler,
@@ -227,9 +227,9 @@ class UCF101PipelineHandler(PipelineHandler):
     def cmp(self, ppl_result: t.Iterator) -> t.Any:
         result, label, pr = [], [], []
         for _data in ppl_result:
-            label.append(_data["ds_data"]["label"])
-            result.append(_data["result"][0])
-            pr.append(_data["result"][1])
+            label.append(_data["input"]["label"])
+            result.append(_data["output"][0])
+            pr.append(_data["output"][1])
         return label, result, pr
 
     @api(

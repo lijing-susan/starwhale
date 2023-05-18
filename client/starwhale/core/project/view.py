@@ -6,15 +6,9 @@ from rich.panel import Panel
 from rich.pretty import Pretty
 
 from starwhale.utils import console, pretty_bytes
-from starwhale.consts import (
-    CREATED_AT_KEY,
-    DEFAULT_PROJECT,
-    DEFAULT_PAGE_IDX,
-    DEFAULT_PAGE_SIZE,
-)
-from starwhale.base.uri import URI
-from starwhale.base.type import URIType
+from starwhale.consts import CREATED_AT_KEY, DEFAULT_PAGE_IDX, DEFAULT_PAGE_SIZE
 from starwhale.base.view import BaseTermView
+from starwhale.base.uri.project import Project as ProjectURI
 
 from .model import Project, ProjectObjType
 
@@ -23,7 +17,7 @@ class ProjectTermView(BaseTermView):
     def __init__(self, project_uri: str = "") -> None:
         super().__init__()
         self.raw_uri = project_uri
-        self.uri = URI(project_uri, expected_type=URIType.PROJECT)
+        self.uri = ProjectURI(project_uri)
         self.project = Project.get_project(self.uri)
 
     @BaseTermView._simple_action_print
@@ -39,16 +33,13 @@ class ProjectTermView(BaseTermView):
     ) -> t.Tuple[t.List[t.Any], t.Dict[str, t.Any]]:
         projects, pager = Project.list(instance_uri, page, size)
 
-        _current_project = URI(
-            instance_uri, expected_type=URIType.INSTANCE
-        ).sw_instance_config.get("current_project", DEFAULT_PROJECT)
+        _current_project = ProjectURI(instance_uri)
 
         result = list()
         for _p in projects:
             _name = _p["name"]
             _owner = _p.get("owner", "")
-            _c_project, _c_owner = URI.uri_to_project_and_owner(_current_project)
-            _is_current = _name == _c_project and (_c_owner == "" or _owner == _c_owner)
+            _is_current = _name == _current_project.name
 
             result.append(
                 {
@@ -65,8 +56,8 @@ class ProjectTermView(BaseTermView):
     def select(self) -> None:
         try:
             self.select_current_default(
-                instance=self.uri.instance_alias or self.uri.instance,
-                project=self.uri.project,
+                instance=self.uri.instance.alias,
+                project=self.uri.name,
             )
         except Exception as e:
             console.print(

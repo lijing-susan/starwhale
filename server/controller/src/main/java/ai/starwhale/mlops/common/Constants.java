@@ -20,4 +20,5 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 
 public interface Constants {
     YAMLMapper yamlMapper = new YAMLMapper();
+    String SW_BUILT_IN_RUNTIME = "starwhale-built-in";
 }

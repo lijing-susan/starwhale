@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { useHistory, useParams } from 'react-router-dom'
 import { createForm } from '@/components/Form'
 import useTranslation from '@/hooks/useTranslation'
@@ -15,7 +15,7 @@ import Button from '@starwhale/ui/Button'
 import { ICreateJobFormSchema, ICreateJobSchema, IJobFormSchema } from '../schemas/job'
 import { FormSelect, Toggle } from '@starwhale/ui/Select'
 import DatasetTreeSelector from '@/domain/dataset/components/DatasetTreeSelector'
-import { RuntimeTreeSelector } from '../../runtime/components/RuntimeTreeSelector'
+import RuntimeTreeSelector from '@runtime/components/RuntimeTreeSelector'
 import ModelTreeSelector from '@/domain/model/components/ModelTreeSelector'
 import { IModelTreeSchema } from '@/domain/model/schemas/model'
 
@@ -52,6 +52,11 @@ export interface IJobFormProps {
     onSubmit: (data: ICreateJobSchema) => Promise<void>
 }
 
+const RuntimeType = {
+    BUILTIN: 'builtIn',
+    OTHER: 'other',
+}
+
 export default function JobForm({ job, onSubmit }: IJobFormProps) {
     const styles = useStyles()
     const [values, setValues] = useState<ICreateJobFormSchema | undefined>(undefined)
@@ -69,6 +74,9 @@ export default function JobForm({ job, onSubmit }: IJobFormProps) {
 
     const [loading, setLoading] = useState(false)
 
+    const [builtInRuntime, setBuiltInRuntime] = useState<string>('')
+    const [type, setType] = useState(builtInRuntime ? RuntimeType.BUILTIN : '')
+
     const handleValuesChange = useCallback(
         (_changes, values_) => {
             if ('modelVersionUrl' in _changes) {
@@ -77,7 +85,9 @@ export default function JobForm({ job, onSubmit }: IJobFormProps) {
             if (values_.modelVersionUrl) {
                 setModelVersionId(values_.modelVersionUrl[0])
             }
-            if (values_.modelVersionHandler) setModelVersionHandler(values_.modelVersionHandler)
+            if (values_.modelVersionHandler) {
+                setModelVersionHandler(values_.modelVersionHandler)
+            }
             let rawTypeTmp = values_.rawType
             if ('rawType' in _changes && !_changes.rawType) {
                 try {
@@ -100,8 +110,8 @@ export default function JobForm({ job, onSubmit }: IJobFormProps) {
         [stepSpecOverWrites, form, t]
     )
 
-    const fullStepSource: StepSpec[] | undefined = React.useMemo(() => {
-        if (!modelTree) return undefined
+    const modelVersion: IModelVersionSchema | undefined = React.useMemo(() => {
+        if (!modelTree || !modelVersionId) return undefined
         let version: IModelVersionSchema | undefined
         modelTree?.forEach((v) =>
             v.versions.forEach((versionTmp) => {
@@ -110,25 +120,57 @@ export default function JobForm({ job, onSubmit }: IJobFormProps) {
                 }
             })
         )
-        return version?.stepSpecs ?? []
+        return version
     }, [modelTree, modelVersionId])
+
+    useEffect(() => {
+        if (!modelVersion) return
+        setBuiltInRuntime(modelVersion?.builtInRuntime ?? '')
+        setType(modelVersion?.builtInRuntime ? RuntimeType.BUILTIN : RuntimeType.OTHER)
+    }, [modelVersion])
+
+    const fullStepSource: StepSpec[] | undefined = React.useMemo(() => {
+        if (!modelVersion) return undefined
+        return modelVersion?.stepSpecs ?? []
+    }, [modelVersion])
 
     const stepSource: StepSpec[] | undefined = React.useMemo(() => {
         if (!fullStepSource) return undefined
-        return _.merge([], fullStepSource, yaml.load(stepSpecOverWrites) ?? []).filter(
-            (v: StepSpec) => v?.job_name === modelVersionHandler
-        )
+        if (stepSpecOverWrites) {
+            try {
+                return (yaml.load(stepSpecOverWrites) ?? []) as StepSpec[]
+            } catch (e) {
+                return []
+            }
+        }
+        return fullStepSource.filter((v: StepSpec) => v?.job_name === modelVersionHandler)
     }, [fullStepSource, modelVersionHandler, stepSpecOverWrites])
+
+    const handleModelHandlerChange = useCallback(
+        (value) => {
+            setModelVersionHandler(value)
+            setStepSpecOverWrites(yaml.dump(fullStepSource?.filter((v: StepSpec) => v?.job_name === value)))
+        },
+        [setModelVersionHandler, fullStepSource]
+    )
+
+    const checkStepSource = useCallback(
+        (value) => {
+            try {
+                yaml.load(value)
+            } catch (e) {
+                toaster.negative(t('wrong yaml syntax'), { autoHideDuration: 1000, key: 'yaml' })
+                return false
+            }
+            return true
+        },
+        [t]
+    )
 
     const handleFinish = useCallback(
         async (values_: ICreateJobFormSchema) => {
             setLoading(true)
-            try {
-                yaml.load(stepSpecOverWrites)
-            } catch (e) {
-                toaster.negative(t('wrong yaml syntax'), { autoHideDuration: 1000 })
-                throw e
-            }
+            if (values_.rawType && !checkStepSource(stepSpecOverWrites)) return
             try {
                 await onSubmit({
                     ..._.omit(values_, [
@@ -137,12 +179,13 @@ export default function JobForm({ job, onSubmit }: IJobFormProps) {
                         'datasetVersionId',
                         'datasetVersionIdsArr',
                         'runtimeId',
+                        'runtimeVersionUrl',
                         'rawType',
                         'stepSpecOverWrites',
                         'modelVersionHandler',
                         'modelVersionUrl',
                     ]),
-                    runtimeVersionUrl: values_.runtimeVersionUrl[0],
+                    runtimeVersionUrl: type === RuntimeType.BUILTIN ? '' : values_.runtimeVersionUrl[0],
                     modelVersionUrl: values_.modelVersionUrl[0],
                     datasetVersionUrls: values_.datasetVersionIdsArr?.join(','),
                     stepSpecOverWrites: values_.rawType ? stepSpecOverWrites : yaml.dump(stepSource),
@@ -152,7 +195,7 @@ export default function JobForm({ job, onSubmit }: IJobFormProps) {
                 setLoading(false)
             }
         },
-        [onSubmit, history, stepSpecOverWrites, t, stepSource]
+        [onSubmit, history, stepSpecOverWrites, stepSource, checkStepSource, builtInRuntime, type]
     )
 
     const handleEditorChange = React.useCallback(
@@ -162,26 +205,15 @@ export default function JobForm({ job, onSubmit }: IJobFormProps) {
         [setStepSpecOverWrites]
     )
 
-    React.useEffect(() => {
-        if (!stepSource) return
-        setStepSpecOverWrites(yaml.dump(stepSource))
-    }, [stepSource, form, setStepSpecOverWrites])
-
-    const rawRef = React.useRef(false)
-    React.useEffect(() => {
-        if (rawRef.current === rawType) return
-        if (rawType) {
-            setStepSpecOverWrites(yaml.dump(_.merge([], stepSource, form.getFieldValue('stepSpecOverWrites'))))
-        }
-        rawRef.current = rawType
-    }, [stepSource, setStepSpecOverWrites, rawType, stepSpecOverWrites, form])
-
     return (
         <Form form={form} initialValues={values} onFinish={handleFinish} onValuesChange={handleValuesChange}>
             <Divider orientation='top'>{t('Environment')}</Divider>
             <div className={styles.row3}>
                 <FormItem label={t('Resource Pool')} name='resourcePool' required>
                     <ResourcePoolSelector autoSelected />
+                </FormItem>
+                <FormItem label={t('eval debug mode')} name='debugMode'>
+                    <Toggle />
                 </FormItem>
             </div>
             <Divider orientation='top'>{t('Model Information')}</Divider>
@@ -195,9 +227,7 @@ export default function JobForm({ job, onSubmit }: IJobFormProps) {
                         <FormSelect
                             clearable={false}
                             value={modelVersionHandler}
-                            onChange={(value: string) => {
-                                setModelVersionHandler(value)
-                            }}
+                            onChange={handleModelHandlerChange}
                             options={
                                 Array.from(new Set(fullStepSource?.map((tmp) => tmp.job_name))).map((tmp) => {
                                     return {
@@ -297,9 +327,53 @@ export default function JobForm({ job, onSubmit }: IJobFormProps) {
             </div>
             <Divider orientation='top'>{t('Runtime')}</Divider>
             <div className='bfc' style={{ width: '660px', marginBottom: '36px' }}>
-                <FormItem label={t('Runtime Version')} name='runtimeVersionUrl' required>
-                    <RuntimeTreeSelector projectId={projectId} />
-                </FormItem>
+                {!!builtInRuntime && (
+                    <FormItemLabel label={t('Runtime Type')}>
+                        <div style={{ marginTop: '8px' }} />
+                        <FormSelect
+                            clearable={false}
+                            value={type}
+                            onChange={(value: string) => {
+                                setType(value)
+                            }}
+                            options={[
+                                {
+                                    label: RuntimeType.BUILTIN,
+                                    id: RuntimeType.BUILTIN,
+                                },
+                                {
+                                    label: RuntimeType.OTHER,
+                                    id: RuntimeType.OTHER,
+                                },
+                            ]}
+                        />
+                    </FormItemLabel>
+                )}
+                {type === RuntimeType.BUILTIN && (
+                    <>
+                        <label
+                            htmlFor='l-built-in'
+                            style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '10px 0px' }}
+                        >
+                            * {t('Runtime Version')}
+                        </label>
+                        <p
+                            id='l-built-in'
+                            style={{
+                                padding: '5px 20px',
+                                borderRadius: '4px',
+                                border: '1px solid #E2E7F0',
+                            }}
+                        >
+                            {builtInRuntime}
+                        </p>
+                    </>
+                )}
+                {(type === RuntimeType.OTHER || !builtInRuntime) && (
+                    <FormItem label={t('Runtime Version')} name='runtimeVersionUrl' required>
+                        <RuntimeTreeSelector projectId={projectId} />
+                    </FormItem>
+                )}
             </div>
             <FormItem>
                 <div style={{ display: 'flex', gap: 20, marginTop: 60 }}>

@@ -156,7 +156,13 @@ function Summary({ fetch }: any) {
                                                     alignItems: 'center',
                                                 }}
                                             >
-                                                {value}
+                                                <pre
+                                                    style={{
+                                                        fontFamily: 'inherit',
+                                                    }}
+                                                >
+                                                    {value}
+                                                </pre>
                                             </div>
                                         </React.Fragment>
                                     )
@@ -259,6 +265,7 @@ function EvaluationWidgetResults() {
             return
         }
         fetchPanelSetting(projectId, storeKey).then((data) => {
+            if (!data) return
             // try simplified version for standalone usage
             const parsed = tryParseSimplified(JSON.parse(data)) ?? data
             const layout = { name: 'custom', content: parsed, label: t('panel.view.config.custom') }

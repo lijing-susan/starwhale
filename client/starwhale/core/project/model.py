@@ -17,13 +17,13 @@ from starwhale.consts import (
     DEFAULT_PAGE_SIZE,
     SHORT_VERSION_CNT,
 )
-from starwhale.base.uri import URI
 from starwhale.utils.fs import move_dir, ensure_dir, get_path_created_time
-from starwhale.base.type import URIType, InstanceType
 from starwhale.base.cloud import CloudRequestMixed
 from starwhale.utils.http import ignore_error
 from starwhale.utils.error import NoSupportError
 from starwhale.utils.config import SWCliConfigMixed
+from starwhale.base.uri.project import Project as ProjectURI
+from starwhale.base.uri.instance import Instance
 
 _SHOW_ALL = 100
 
@@ -35,9 +35,9 @@ class ProjectObjType:
 
 
 class Project(metaclass=ABCMeta):
-    def __init__(self, uri: URI) -> None:
+    def __init__(self, uri: ProjectURI) -> None:
         self.uri = uri
-        self.name = uri.project.lower()
+        self.name = uri.name.lower()
         self.sw_config = SWCliConfigMixed()
 
     @abstractmethod
@@ -63,26 +63,23 @@ class Project(metaclass=ABCMeta):
         page: int = DEFAULT_PAGE_IDX,
         size: int = DEFAULT_PAGE_SIZE,
     ) -> t.Tuple[t.List[t.Dict[str, t.Any]], t.Dict[str, t.Any]]:
-        _uri = URI(instance_uri, expected_type=URIType.INSTANCE)
-        if _uri.instance_type == InstanceType.STANDALONE:
+        _uri = Instance(instance_uri)
+        if _uri.is_local:
             return StandaloneProject.list()
-        elif _uri.instance_type == InstanceType.CLOUD:
-            return CloudProject.list(instance_uri, page, size)  # type: ignore
-        else:
-            raise NoSupportError(f"{instance_uri}")
+        return CloudProject.list(instance_uri, page, size)  # type: ignore
 
     @classmethod
-    def get_project(cls, project_uri: URI) -> Project:
-        if project_uri.instance_type == InstanceType.STANDALONE:
+    def get_project(cls, project_uri: ProjectURI) -> Project:
+        if project_uri.instance.is_local:
             return StandaloneProject(project_uri)
-        elif project_uri.instance_type == InstanceType.CLOUD:
+        elif project_uri.instance.is_cloud:
             return CloudProject(project_uri)
         else:
             raise NoSupportError(f"{project_uri}")
 
 
 class StandaloneProject(Project):
-    def __init__(self, uri: URI) -> None:
+    def __init__(self, uri: ProjectURI) -> None:
         super().__init__(uri)
         self.loc = Path(self.sw_config.rootdir / self.name)
         self.recover_dir = Path(self.sw_config.rootdir / RECOVER_DIRNAME)
@@ -161,7 +158,7 @@ class CloudProject(Project, CloudRequestMixed):
         return self.do_http_request_simple_ret(
             "/project",
             method=HTTPMethod.POST,
-            instance_uri=self.uri,
+            instance=self.uri.instance,
             data=json.dumps({"projectName": self.name}),
         )
 
@@ -169,14 +166,14 @@ class CloudProject(Project, CloudRequestMixed):
         return self.do_http_request_simple_ret(
             f"/project/{self.name}/action/recover",
             method=HTTPMethod.POST,
-            instance_uri=self.uri,
+            instance=self.uri.instance,
         )
 
     def remove(self, force: bool = False) -> t.Tuple[bool, str]:
         return self.do_http_request_simple_ret(
             f"/project/{self.name}",
             method=HTTPMethod.DELETE,
-            instance_uri=self.uri,
+            instance=self.uri.instance,
             data=json.dumps({"force": int(force)}),
         )
 
@@ -189,11 +186,11 @@ class CloudProject(Project, CloudRequestMixed):
         size: int = DEFAULT_PAGE_SIZE,
     ) -> t.Tuple[t.List[t.Dict[str, t.Any]], t.Dict[str, t.Any]]:
         crm = CloudRequestMixed()
-        uri = URI(instance_uri, expected_type=URIType.INSTANCE)
+        uri = Instance(instance_uri)
         r = crm.do_http_request(
             "/project",
-            params={"pageNum": page, "pageSize": size, "ownerName": uri.user_name},
-            instance_uri=uri,
+            params={"pageNum": page, "pageSize": size, "ownerName": uri.username},
+            instance=uri,
         ).json()
 
         projects = []
@@ -215,7 +212,7 @@ class CloudProject(Project, CloudRequestMixed):
         r = self.do_http_request(
             f"/project/{self.name}",
             method=HTTPMethod.GET,
-            instance_uri=self.uri,
+            instance=self.uri.instance,
         )
         # TODO: add more project details
         return {
@@ -229,7 +226,7 @@ class CloudProject(Project, CloudRequestMixed):
     @ignore_error([])
     def _fetch_model_files(self, mid: int) -> t.List:
         r = self.do_http_request(
-            f"/project/{self.name}/model/{mid}", instance_uri=self.uri
+            f"/project/{self.name}/model/{mid}", instance=self.uri.instance
         )
         return r.json()["data"]["files"]  # type: ignore
 
@@ -240,7 +237,7 @@ class CloudProject(Project, CloudRequestMixed):
         r = self.do_http_request(
             f"/project/{self.name}/{typ}",
             params={"pageSize": _SHOW_ALL},
-            instance_uri=self.uri,
+            instance=self.uri.instance,
         )
 
         ret = []
@@ -251,7 +248,7 @@ class CloudProject(Project, CloudRequestMixed):
             mvr = self.do_http_request(
                 f"/project/{self.name}/{typ}/{_m['id']}/version",
                 params={"pageSize": versions_size},
-                instance_uri=self.uri,
+                instance=self.uri.instance,
             )
             versions = []
             for _v in mvr.json()["data"]["list"]:

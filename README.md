@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="https://github.com/star-whale/starwhale/raw/main/docs/static/img/starwhale.png" width="600" style="max-width: 600px;">
+    <img src="https://github.com/star-whale/docs/raw/main/static/img/starwhale.png" width="600" style="max-width: 600px;">
 </p>
 
 <p align="center">
@@ -169,9 +169,9 @@ Starwhale is an MLOps platform. It provides **Instance**, **Project**, **Runtime
             ) -> t.Tuple[t.List[int], t.List[int], t.List[t.List[float]]]:
                 result, label, pr = [], [], []
                 for _data in ppl_result:
-                    label.append(_data["ds_data"]["label"])
-                    result.append(_data["result"][0])
-                    pr.append(_data["result"][1])
+                    label.append(_data["input"]["label"])
+                    result.append(_data["output"][0])
+                    pr.append(_data["output"][1])
                 return label, result, pr
 
         def _pre(self, input:bytes):
@@ -351,11 +351,11 @@ Starwhale is an MLOps platform. It provides **Instance**, **Project**, **Runtime
     kubectl get deployments -n starwhale
     ```
 
-    | NAME | READY | UP-TO-DATE| AVAILABLE | AGE |
-    |------|-------|--------|----------|-----|
-    |controller|1/1|1|1|5m|
-    |minio|1/1|1|1|5m|
-    |mysql|1/1|1|1|5m|
+    | NAME       | READY | UP-TO-DATE | AVAILABLE | AGE |
+    | ---------- | ----- | ---------- | --------- | --- |
+    | controller | 1/1   | 1          | 1         | 5m  |
+    | minio      | 1/1   | 1          | 1         | 5m  |
+    | mysql      | 1/1   | 1          | 1         | 5m  |
 
     Make the Starwhale controller accessible locally with the following command:
 

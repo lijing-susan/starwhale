@@ -7,12 +7,23 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import numpy as np
+import pytest
 import requests
 from requests_mock import Mocker
 
 from starwhale.consts import HTTPMethod
 from starwhale.api._impl import data_store
-from starwhale.api._impl.data_store import INT64, ColumnSchema, TableWriterException
+from starwhale.api._impl.data_store import (
+    INT32,
+    INT64,
+    STRING,
+    SwType,
+    SwMapType,
+    SwListType,
+    SwTupleType,
+    ColumnSchema,
+    TableWriterException,
+)
 
 from .. import BaseTestCase
 
@@ -1868,6 +1879,9 @@ class TestRemoteDataStore(unittest.TestCase):
             timeout=60,
         )
 
+    @pytest.mark.skip(
+        "enable this test when data store support using encodeWithType = False"
+    )
     @patch("starwhale.api._impl.data_store.requests.post")
     def test_scan_table(self, mock_post: Mock) -> None:
         mock_post.return_value.status_code = 200
@@ -2050,6 +2064,7 @@ class TestRemoteDataStore(unittest.TestCase):
                             "tableName": "t3",
                         },
                     ],
+                    "encodeWithType": True,
                     "end": "0000000000000001",
                     "start": "0000000000000001",
                     "limit": 1000,
@@ -2100,6 +2115,7 @@ class TestRemoteDataStore(unittest.TestCase):
                             "tableName": "t1",
                         },
                     ],
+                    "encodeWithType": True,
                     "limit": 1000,
                 },
                 separators=(",", ":"),
@@ -2119,6 +2135,7 @@ class TestRemoteDataStore(unittest.TestCase):
                             "tableName": "t1",
                         },
                     ],
+                    "encodeWithType": True,
                     "limit": 1000,
                     "start": f"{999:x}",
                     "startInclusive": False,
@@ -2140,6 +2157,7 @@ class TestRemoteDataStore(unittest.TestCase):
                             "tableName": "t1",
                         },
                     ],
+                    "encodeWithType": True,
                     "limit": 1000,
                     "start": f"{1999:x}",
                     "startInclusive": False,
@@ -2352,6 +2370,46 @@ class TestScalarEncodeDecode(BaseTestCase):
             self.assertEqual(
                 tc[1], data_store.INT64.decode(tc[0]), f"INT64 encode {tc[0]} error"
             )
+
+
+def test_decode_schema_from_type_encoded_values():
+    value = {
+        "type": "MAP",
+        "value": [
+            {
+                "key": {"type": "INT32", "value": "00000001"},
+                "value": {"type": "STRING", "value": "foobar"},
+            }
+        ],
+    }
+    schema = SwType.decode_schema_from_type_encoded_value(value)
+    assert schema == SwMapType(INT32, STRING)
+    decoded = schema.decode_from_type_encoded_value(value)
+    assert decoded == {1: "foobar"}
+
+    # list
+    value = {
+        "type": "LIST",
+        "value": [
+            {"type": "STRING", "value": "foobar"},
+        ],
+    }
+    schema = SwType.decode_schema_from_type_encoded_value(value)
+    assert schema == SwListType(STRING)
+    decoded = schema.decode_from_type_encoded_value(value)
+    assert decoded == ["foobar"]
+
+    # tuple
+    value = {
+        "type": "TUPLE",
+        "value": [
+            {"type": "STRING", "value": "foobar"},
+        ],
+    }
+    schema = SwType.decode_schema_from_type_encoded_value(value)
+    assert schema == SwTupleType(STRING)
+    decoded = schema.decode_from_type_encoded_value(value)
+    assert decoded == ("foobar",)
 
 
 if __name__ == "__main__":

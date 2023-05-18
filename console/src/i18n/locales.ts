@@ -121,6 +121,14 @@ const model = {
         en: 'Handler',
         zh: 'Handler',
     },
+    'model.selector.placeholder': {
+        en: 'Select Model',
+        zh: '选择模型',
+    },
+    'model.selector.version.placeholder': {
+        en: 'Select Model Version',
+        zh: '请选择模型版本',
+    },
     'online eval': {
         en: 'Online Evaluation',
         zh: '在线评测',
@@ -255,7 +263,11 @@ const job = {
     },
     'job.status.ready': {
         en: 'Ready',
-        zh: '已就绪',
+        zh: '就绪',
+    },
+    'job.status.selector.placeholder': {
+        en: 'Select Job Status',
+        zh: '选择任务状态',
     },
 }
 
@@ -295,6 +307,10 @@ const evaluation = {
     'evaluation.detail.compare': {
         en: 'Compare',
         zh: '评测对比',
+    },
+    'evalution.result.title': {
+        en: 'Result Details',
+        zh: '结果详情',
     },
 }
 
@@ -354,6 +370,14 @@ const table = {
     'table.search.placeholder': {
         en: 'Search and Filter',
         zh: '搜索和过滤',
+    },
+    'table.config.query.simple': {
+        en: 'Simple Query',
+        zh: '简单查询',
+    },
+    'table.config.query.advanced': {
+        en: 'Advanced Query',
+        zh: '高级查询',
     },
 }
 
@@ -535,6 +559,10 @@ const locales0 = {
     'tasks': {
         en: 'tasks',
         zh: '任务',
+    },
+    'View Tasks': {
+        en: 'View Tasks',
+        zh: '查看任务',
     },
     'Jobs': {
         en: 'Jobs',
@@ -756,6 +784,10 @@ const locales0 = {
         en: 'Created',
         zh: '创建时间',
     },
+    'Finished': {
+        en: 'Finished',
+        zh: '完成时间',
+    },
     'Owner': {
         en: 'Owner',
         zh: '操作者',
@@ -836,6 +868,10 @@ const locales0 = {
         en: 'Runtime',
         zh: '运行时',
     },
+    'Runtime Type': {
+        en: 'Runtime Type',
+        zh: '类型',
+    },
     'End Time': {
         en: 'End Time',
         zh: '结束时间',
@@ -867,10 +903,6 @@ const locales0 = {
     'View Results': {
         en: 'View Results',
         zh: '查看结果',
-    },
-    'View Tasks': {
-        en: 'View Tasks',
-        zh: '查看任务',
     },
     'job action done': {
         en: 'job action done',
@@ -1201,6 +1233,10 @@ const locales0 = {
         en: 'Edit',
         zh: '编辑',
     },
+    'Other Login Methods': {
+        en: 'Other Login Methods',
+        zh: '其他方式登录',
+    },
     'emailPlaceholder for login': {
         en: 'yours@example.com or your username',
         zh: '您的电子邮件或用户名',
@@ -1235,11 +1271,11 @@ const locales0 = {
     },
     'Sign Up With': {
         en: 'Sign up with {{0}}',
-        zh: '使用 {{0}} 注册',
+        zh: '{{0}}',
     },
     'Log In With': {
         en: 'Log in with {{0}}',
-        zh: '使用 {{0}} 登录',
+        zh: '{{0}} ',
     },
     'Github': {
         en: 'Github',
@@ -1283,7 +1319,7 @@ const locales0 = {
     },
     'alreadyHaveAccount': {
         en: 'Already have an account?',
-        zh: '已经有一个账户了吗？',
+        zh: '注册过了？',
     },
     'Manage Member': {
         en: 'Manage Member',
@@ -1373,6 +1409,10 @@ const locales0 = {
         en: 'Edit',
         zh: '修改',
     },
+    'eval debug mode': {
+        en: 'Debug Mode',
+        zh: '调试模式',
+    },
     'wrong yaml syntax': {
         en: 'wrong yaml syntax',
         zh: 'YAML 语法错误',
@@ -1406,4 +1446,9 @@ const locales0 = {
     ...ui,
 }
 
-export const locales: { [key in keyof typeof locales0]: ILocaleItem } = locales0
+// eslint-disable-next-line import/no-mutable-exports
+export let locales: { [key in keyof typeof locales0]: ILocaleItem } = locales0
+
+export function registerLocales(tmp: Record<string, ILocaleItem>) {
+    locales = { ...tmp, ...locales0 }
+}

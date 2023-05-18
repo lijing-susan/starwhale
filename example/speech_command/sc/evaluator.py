@@ -78,8 +78,8 @@ def get_m5_model():
 
 
 @torch.no_grad()
-@evaluation.predict(resources={"nvidia.com/gpu": 1})
-def predict_speech(data, **kw):
+@evaluation.predict(resources={"nvidia.com/gpu": 1}, replicas=2)
+def predict_speech(data):
     _audio = io.BytesIO(data.speech.to_bytes())
     waveform, _ = torchaudio.load(_audio)
     waveform = torch.nn.utils.rnn.pad_sequence(
@@ -105,9 +105,9 @@ def predict_speech(data, **kw):
 def evaluate_speech(ppl_result):
     result, label, pr = [], [], []
     for _data in ppl_result:
-        label.append(ALL_LABELS_MAP[_data["ds_data"]["command"]])
-        pr.append(_data["result"][1])
-        result.append(_data["result"][0])
+        label.append(ALL_LABELS_MAP[_data["input"]["command"]])
+        pr.append(_data["output"][1])
+        result.append(_data["output"][0])
     return label, result, pr
 
 

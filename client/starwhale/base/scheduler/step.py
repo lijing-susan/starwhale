@@ -4,9 +4,7 @@ import typing as t
 from pathlib import Path
 from concurrent.futures import as_completed, ThreadPoolExecutor
 
-from loguru import logger
-
-from starwhale.utils import load_yaml
+from starwhale.utils import console, load_yaml
 from starwhale.consts import RunStatus
 from starwhale.base.mixin import ASDictMixin
 from starwhale.base.context import Context
@@ -77,12 +75,20 @@ class Step(ASDictMixin):
         # default run index 0 handler
         job_name = job_name or "0"
         jobs = load_yaml(yaml_path)
-        if job_name in jobs:
-            job = jobs[job_name]
-        else:
-            job_index = int(job_name)
-            sorted_jobs = sorted(jobs.items())
-            job = sorted_jobs[job_index][1]
+        sorted_jobs = sorted(jobs.items())
+
+        job = None
+        try:
+            if job_name in jobs:
+                job = jobs[job_name]
+            else:
+                job_index = int(job_name)
+                job = sorted_jobs[job_index][1]
+        finally:
+            console.print(":bank: runnable handlers:")
+            for i, j in enumerate(sorted_jobs):
+                flag = "" if job is None or job != j[1] else "*"
+                console.print(f"\t {flag:2} [{i}]: {j[0]}")
 
         """
         - cls_name: MNISTInference
@@ -152,7 +158,7 @@ class StepExecutor:
         return f"StepExecutor: step-{self.step}, version-{self.version}, dataset_uris:{self.dataset_uris}"
 
     def execute(self) -> StepResult:
-        logger.info(f"start to execute step:{self.step}")
+        console.info(f"start to execute step:{self.step}")
 
         tasks = [
             TaskExecutor(
@@ -176,5 +182,5 @@ class StepExecutor:
             future_tasks = [pool.submit(t.execute) for t in tasks]
             task_results = [t.result() for t in as_completed(future_tasks)]
 
-        logger.info(f"finish to execute step:{self.step}")
+        console.info(f"finish to execute step:{self.step}")
         return StepResult(name=self.step.name, task_results=task_results)

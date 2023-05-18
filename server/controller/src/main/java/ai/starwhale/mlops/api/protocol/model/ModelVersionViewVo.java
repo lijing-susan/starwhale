@@ -39,5 +39,7 @@ public class ModelVersionViewVo {
 
     private List<StepSpec> stepSpecs;
 
+    private String builtInRuntime;
+
     private Long createdTime;
 }

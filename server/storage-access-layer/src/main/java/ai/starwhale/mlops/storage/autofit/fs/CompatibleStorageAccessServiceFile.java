@@ -53,6 +53,11 @@ public class CompatibleStorageAccessServiceFile extends CompatibleStorageAccessS
     }
 
     @Override
+    public StorageObjectInfo head(String path, boolean md5sum) throws IOException {
+        return storageAccessService.head(path, md5sum);
+    }
+
+    @Override
     public void put(String path, InputStream inputStream, long size) throws IOException {
         storageAccessService.put(path, inputStream, size);
     }
@@ -92,5 +97,8 @@ public class CompatibleStorageAccessServiceFile extends CompatibleStorageAccessS
         return storageAccessService.signedUrl(path, expTimeMillis);
     }
 
-
+    @Override
+    public String signedPutUrl(String path, Long expTimeMillis) throws IOException {
+        return storageAccessService.signedPutUrl(path, expTimeMillis);
+    }
 }

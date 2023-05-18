@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import typing as t
 from pathlib import Path
 
@@ -10,15 +11,16 @@ from click_option_group import (
     RequiredMutuallyExclusiveOptionGroup,
 )
 
-from starwhale import URI, URIType
 from starwhale.consts import DefaultYAMLName, DEFAULT_PAGE_IDX, DEFAULT_PAGE_SIZE
-from starwhale.base.type import InstanceType
 from starwhale.utils.cli import AliasedGroup
 from starwhale.consts.env import SWEnv
 from starwhale.utils.error import NoSupportError
 from starwhale.core.model.view import get_term_view, ModelTermView
+from starwhale.base.uri.project import Project
 from starwhale.core.model.model import ModelConfig, ModelInfoFilter
 from starwhale.core.model.store import ModelStorage
+from starwhale.base.uri.resource import Resource, ResourceType
+from starwhale.core.runtime.process import Process
 
 
 @click.group(
@@ -67,6 +69,14 @@ def model_cmd(ctx: click.Context) -> None:
     show_default=True,
     help="Package Starwhale Runtime into the model.",
 )
+@click.option(
+    "--add-all",
+    is_flag=True,
+    default=False,
+    help="Add all files in the working directory to the model package"
+    "(excludes python cache files and virtual environment files when disabled)."
+    "The '.swignore' file still takes effect.",
+)
 def _build(
     workdir: str,
     project: str,
@@ -76,6 +86,7 @@ def _build(
     package_runtime: bool,
     name: str,
     desc: str,
+    add_all: bool,
 ) -> None:
     """Build starwhale model package.
     Only standalone instance supports model build.
@@ -115,7 +126,31 @@ def _build(
         model_config=config,
         runtime_uri=runtime,
         package_runtime=package_runtime,
+        add_all=add_all,
     )
+
+
+@model_cmd.command("extract")
+@click.argument("model")
+@click.argument("target_dir", default=".")
+@click.option("-f", "--force", is_flag=True, help="Force to extract model package")
+def _extract(model: str, target_dir: str, force: bool) -> None:
+    """Extract model package to target directory.
+
+    MODEL: model uri with version.
+
+    TARGET_DIR: target directory to extract model package.
+
+    Example:
+
+        \b
+        - extract mnist model package to current directory
+            swcli model extract mnist/version/xxxx .
+
+        - extract mnist model package to current directory and force to overwrite the files
+            swcli model extract mnist/version/xxxx . -f
+    """
+    ModelTermView(model).extract(target=Path(target_dir), force=force)
 
 
 @model_cmd.command("tag", help="Model Tag Management, add or remove")
@@ -215,10 +250,7 @@ def _info(view: t.Type[ModelTermView], model: str, output_filter: str) -> None:
         swcli model info mnist -of files # show model package files tree
         swcli -o json model info mnist -of all # show all info in json format
     """
-    uri = URI(model, expected_type=URIType.MODEL)
-    if not uri.object.version:
-        uri.object.version = "latest"
-
+    uri = Resource(model, typ=ResourceType.model)
     view(uri).info(ModelInfoFilter(output_filter))
 
 
@@ -234,7 +266,7 @@ def _info(view: t.Type[ModelTermView], model: str, output_filter: str) -> None:
 def _diff(
     view: t.Type[ModelTermView], base_uri: str, compare_uri: str, show_details: bool
 ) -> None:
-    view(base_uri).diff(URI(compare_uri, expected_type=URIType.MODEL), show_details)
+    view(base_uri).diff(Resource(compare_uri, typ=ResourceType.model), show_details)
 
 
 @model_cmd.command("list", aliases=["ls"])
@@ -372,6 +404,19 @@ def _recover(model: str, force: bool) -> None:
     help="[ONLY Standalone]Use docker container to run model handler, the docker image or runtime uri must be set",
 )
 @optgroup.option(  # type: ignore[no-untyped-call]
+    "-fs",
+    "--forbid-snapshot",
+    is_flag=True,
+    help="[ONLY STANDALONE]Forbid to use model run snapshot dir, use model src dir directly",
+)
+@optgroup.option(  # type: ignore[no-untyped-call]
+    "--cleanup-snapshot/--no-cleanup-snapshot",
+    is_flag=True,
+    default=True,
+    show_default=True,
+    help="[ONLY STANDALONE]Cleanup snapshot dir after model run",
+)
+@optgroup.option(  # type: ignore[no-untyped-call]
     "--resource-pool",
     default="default",
     type=str,
@@ -439,6 +484,8 @@ def _run(
     override_task_num: int,
     resource_pool: str,
     forbid_packaged_runtime: bool,
+    forbid_snapshot: bool,
+    cleanup_snapshot: bool,
 ) -> None:
     """Run Model.
     Model Package and the model source directory are supported.
@@ -464,8 +511,8 @@ def _run(
         swcli model run --workdir . --module mnist.evaluator --handler mnist.evaluator:MNISTInference.cmp
     """
     # TODO: support run model in cluster mode
-    run_project_uri = URI(run_project, expected_type=URIType.PROJECT)
-    in_server = run_project_uri.instance_type == InstanceType.CLOUD
+    run_project_uri = Project(run_project)
+    in_server = run_project_uri.instance.is_cloud
 
     if in_container and in_server:
         raise RuntimeError("in-container and in-server are mutually exclusive")
@@ -514,11 +561,14 @@ def _run(
             run_handler=handler,
             dataset_uris=datasets,
             runtime_uri=runtime_uri,
+            forbid_snapshot=forbid_snapshot,
+            cleanup_snapshot=cleanup_snapshot,
             scheduler_run_args={
                 "step_name": step,
                 "task_index": task_index,
                 "task_num": override_task_num,
             },
+            force_generate_jobs_yaml=uri is None,
         )
 
 
@@ -605,11 +655,16 @@ def _prepare_model_run_args(
     modules: t.List[str],
     model_yaml: t.Optional[str],
     forbid_packaged_runtime: bool,
-) -> t.Tuple[Path, ModelConfig, t.Optional[URI]]:
-    runtime_uri = URI.guess(runtime, fallback_type=URIType.RUNTIME) if runtime else None
+) -> t.Tuple[Path, ModelConfig, t.Optional[Resource]]:
+    runtime_uri: Resource | None = None
+    if runtime:
+        try:
+            runtime_uri = Resource(runtime, typ=ResourceType.runtime)
+        except Exception:
+            pass
 
     if model:
-        model_uri = URI(model, expected_type=URIType.MODEL)
+        model_uri = Resource(model, typ=ResourceType.model)
         model_store = ModelStorage(model_uri)
         model_src_dir = model_store.src_dir
 
@@ -617,7 +672,8 @@ def _prepare_model_run_args(
             raise NoSupportError("module is not supported in model uri mode")
 
         if (
-            model_store.digest.get("packaged_runtime")
+            os.environ.get(Process.EnvInActivatedProcess, "0") == "0"
+            and model_store.digest.get("packaged_runtime")
             and not forbid_packaged_runtime
             and runtime_uri is None
         ):
@@ -625,6 +681,7 @@ def _prepare_model_run_args(
     else:
         model_src_dir = Path(workdir)
 
+    model_src_dir = model_src_dir.absolute().resolve()
     if model_yaml is None:
         yaml_path = model_src_dir / DefaultYAMLName.MODEL
     else:

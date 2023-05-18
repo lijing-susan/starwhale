@@ -9,10 +9,14 @@ install-dev-tools:
 install-dependencies:
 	yarn
 
-build-ui:
+prepare:
+	mkdir -p extensions && \
+		([ ! -f "extensions/index.tsx" ] && echo 'export default {}' > extensions/index.tsx) || echo 'extensions exists'
+
+build-ui: prepare
 	yarn build
 
-ci-lint:
+ci-lint: prepare
 	yarn lint
 	yarn typecheck
 

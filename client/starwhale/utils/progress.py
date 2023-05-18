@@ -12,7 +12,7 @@ def run_with_progress_bar(
     operations: t.Sequence[t.Tuple[t.Any, ...]],
     **kw: t.Any,
 ) -> None:
-    if os.environ.get(ENV_DISABLE_PROGRESS_BAR) == "0":
+    if os.environ.get(ENV_DISABLE_PROGRESS_BAR) == "1":
         for op in operations:
             if len(op) == 4:
                 op[0](**op[3])
@@ -23,8 +23,8 @@ def run_with_progress_bar(
             SpinnerColumn(),
             *Progress.get_default_columns(),
             TimeElapsedColumn(),
-            console=console,
             refresh_per_second=1,
+            console=console.rich_console,
         ) as progress:
             task = progress.add_task(
                 f"[red]{title}", total=sum([o[1] for o in operations])

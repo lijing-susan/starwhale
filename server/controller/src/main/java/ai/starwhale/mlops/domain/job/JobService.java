@@ -39,6 +39,7 @@ import ai.starwhale.mlops.domain.job.step.bo.Step;
 import ai.starwhale.mlops.domain.model.ModelService;
 import ai.starwhale.mlops.domain.project.ProjectService;
 import ai.starwhale.mlops.domain.runtime.RuntimeService;
+import ai.starwhale.mlops.domain.runtime.bo.RuntimeVersion;
 import ai.starwhale.mlops.domain.storage.StoragePathCoordinator;
 import ai.starwhale.mlops.domain.system.SystemSettingService;
 import ai.starwhale.mlops.domain.task.bo.Task;
@@ -173,14 +174,26 @@ public class JobService {
     public Long createJob(String projectUrl,
             String modelVersionUrl, String datasetVersionUrls, String runtimeVersionUrl,
             String comment, String resourcePool,
-            String handler, String stepSpecOverWrites, JobType type) {
+            String handler, String stepSpecOverWrites, JobType type, boolean debugMode) {
         User user = userService.currentUserDetail();
         String jobUuid = IdUtil.simpleUUID();
         var project = projectService.findProject(projectUrl);
-        var runtimeVersion = runtimeService.findRuntimeVersion(runtimeVersionUrl);
-        var runtime = runtimeService.findRuntime(runtimeVersion.getRuntimeId());
         var modelVersion = modelService.findModelVersion(modelVersionUrl);
         var model = modelService.findModel(modelVersion.getModelId());
+
+        RuntimeVersion runtimeVersion;
+        if (StringUtils.hasText(runtimeVersionUrl)) {
+            runtimeVersion = runtimeService.findRuntimeVersion(runtimeVersionUrl);
+        } else {
+            log.debug("try to find built-in runtime for model:{}", modelVersion.getId());
+            runtimeVersionUrl = modelVersion.getBuiltInRuntime();
+            if (!StringUtils.hasText(runtimeVersionUrl)) {
+                throw new SwValidationException(ValidSubject.RUNTIME, "no runtime or built-in runtime");
+            }
+            runtimeVersion = runtimeService.findBuiltInRuntimeVersion(project.getId(), runtimeVersionUrl);
+        }
+        var runtime = runtimeService.findRuntime(runtimeVersion.getRuntimeId());
+
         var datasetVersionIdMaps = Arrays.stream(datasetVersionUrls.split("[,;]"))
                 .map(datasetService::findDatasetVersion)
                 .collect(Collectors.toMap(DatasetVersion::getId, DatasetVersion::getVersionName));
@@ -236,6 +249,7 @@ public class JobService {
                 .stepSpec(stepSpecOverWrites)
                 .createdTime(new Date())
                 .modifiedTime(new Date())
+                .debugMode(debugMode)
                 .build();
 
         jobDao.addJob(jobEntity);

@@ -21,7 +21,8 @@ class CIFAR10Inference(PipelineHandler):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = self._load_model(self.device)
 
-    def ppl(self, data: dict, **kw):
+    def predict(self, data, external):
+        print(f"index: {external['index']}")
         data_tensor = self._pre(data["image"])
         output = self.model(data_tensor)
         return self._post(output)
@@ -33,12 +34,12 @@ class CIFAR10Inference(PipelineHandler):
         show_roc_auc=True,
         all_labels=[i for i in range(0, 10)],
     )
-    def cmp(self, ppl_result):
+    def evaluate(self, ppl_result):
         result, label, pr = [], [], []
         for _data in ppl_result:
-            label.append(_data["ds_data"]["label"])
-            result.extend(_data["result"][0])
-            pr.extend(_data["result"][1])
+            label.append(_data["input"]["label"])
+            result.extend(_data["output"][0])
+            pr.extend(_data["output"][1])
         return label, result, pr
 
     def _pre(self, input: Image) -> torch.Tensor:
@@ -85,5 +86,5 @@ class CIFAR10Inference(PipelineHandler):
             "ship",
             "truck",
         )
-        _, prob = self.ppl(Image(fp=buf.getvalue()))
+        _, prob = self.predict(Image(fp=buf.getvalue()))
         return {classes[i]: p for i, p in enumerate(prob[0])}

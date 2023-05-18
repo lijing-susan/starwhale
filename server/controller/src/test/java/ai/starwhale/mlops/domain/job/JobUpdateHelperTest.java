@@ -69,7 +69,7 @@ public class JobUpdateHelperTest {
         verify(jobDao).updateJobStatus(mockJob.getId(), desiredStatus);
         verify(hotJobHolder).remove(mockJob.getId());
         verify(jobDao).updateJobFinishedTime(eq(mockJob.getId()),
-                argThat(d -> d.getTime() > 0));
+                argThat(d -> d.getTime() > 0), argThat(d -> d > 0));
     }
 
     @Test
@@ -93,14 +93,14 @@ public class JobUpdateHelperTest {
         verify(jobDao, times(1)).updateJobStatus(mockJob.getId(), desiredStatus);
         verify(hotJobHolder).remove(mockJob.getId());
         verify(jobDao).updateJobFinishedTime(eq(mockJob.getId()),
-                argThat(d -> d.getTime() > 0));
+                argThat(d -> d.getTime() > 0), argThat(d -> d > 0));
         Thread.sleep(100); // wait for async status update
         Assertions.assertEquals(TaskStatus.CANCELED, luckTask.getStatus());
 
     }
 
     @Test
-    public void testCanceled() {
+    public void testCanceled() throws InterruptedException {
 
         HotJobHolder hotJobHolder = mock(HotJobHolder.class);
         JobStatusCalculator jobStatusCalculator = mock(JobStatusCalculator.class);
@@ -115,11 +115,12 @@ public class JobUpdateHelperTest {
         mockJob.setStatus(JobStatus.RUNNING);
         JobStatus desiredStatus = JobStatus.CANCELED;
         when(jobStatusCalculator.desiredJobStatus(anyCollection())).thenReturn(desiredStatus);
+        Thread.sleep(1L);
         jobUpdateHelper.updateJob(mockJob);
         Assertions.assertEquals(desiredStatus, mockJob.getStatus());
         verify(jobDao).updateJobStatus(mockJob.getId(), desiredStatus);
         verify(jobDao).updateJobFinishedTime(eq(mockJob.getId()),
-                argThat(d -> d.getTime() > 0));
+                argThat(d -> d.getTime() > 0), argThat(d -> d >= 0));
 
     }
 

@@ -5,8 +5,7 @@ import asyncio
 from pathlib import Path
 from functools import wraps
 
-from loguru import logger
-
+from starwhale.utils import console
 from starwhale.consts import RunStatus, DecoratorInjectAttr
 from starwhale.utils.load import load_module
 from starwhale.utils.error import NoSupportError
@@ -52,10 +51,10 @@ class TaskExecutor:
         return self.__status
 
     def _get_internal_func_name(self, func_name: str) -> str:
-        if func_name == "ppl":
-            return "_starwhale_internal_run_ppl"
-        elif func_name == "cmp":
-            return "_starwhale_internal_run_cmp"
+        if func_name in ("ppl", "predict"):
+            return "_starwhale_internal_run_predict"
+        elif func_name in ("cmp", "evaluate"):
+            return "_starwhale_internal_run_evaluate"
         else:
             raise RuntimeError(
                 f"failed to map func name({func_name}) into PipelineHandler internal func name"
@@ -69,8 +68,8 @@ class TaskExecutor:
         from starwhale.api._impl.evaluation import PipelineHandler
 
         patch_func_map = {
-            "ppl": lambda *args, **kwargs: ...,
-            "cmp": lambda *args, **kwargs: ...,
+            "predict": lambda *args, **kwargs: ...,
+            "evaluate": lambda *args, **kwargs: ...,
         }
 
         if func_name not in patch_func_map:
@@ -108,9 +107,9 @@ class TaskExecutor:
         if cls_ is None:
             func = getattr(module, self.step.func_name)
             if getattr(func, DecoratorInjectAttr.Evaluate, False):
-                self._run_in_pipeline_handler_cls(func, "cmp")
+                self._run_in_pipeline_handler_cls(func, "evaluate")
             elif getattr(func, DecoratorInjectAttr.Predict, False):
-                self._run_in_pipeline_handler_cls(func, "ppl")
+                self._run_in_pipeline_handler_cls(func, "predict")
             elif getattr(func, DecoratorInjectAttr.Step, False):
                 func()
             else:
@@ -128,26 +127,25 @@ class TaskExecutor:
                 with cls_() as instance:
                     func = getattr(instance, func_name)
                     if getattr(func, DecoratorInjectAttr.Evaluate, False):
-                        self._run_in_pipeline_handler_cls(func, "cmp")
+                        self._run_in_pipeline_handler_cls(func, "evaluate")
                     elif getattr(func, DecoratorInjectAttr.Predict, False):
-                        self._run_in_pipeline_handler_cls(func, "ppl")
+                        self._run_in_pipeline_handler_cls(func, "predict")
                     else:
                         func()
             else:
                 func = getattr(cls_(), func_name)
                 if getattr(func, DecoratorInjectAttr.Evaluate, False):
-                    self._run_in_pipeline_handler_cls(func, "cmp")
+                    self._run_in_pipeline_handler_cls(func, "evaluate")
                 elif getattr(func, DecoratorInjectAttr.Predict, False):
-                    self._run_in_pipeline_handler_cls(func, "ppl")
+                    self._run_in_pipeline_handler_cls(func, "predict")
                 else:
                     func()
 
     def execute(self) -> TaskResult:
-        logger.info(f"start to execute task with context({self.context}) ...")
+        console.info(f"start to execute task with context({self.context}) ...")
         try:
             loop = asyncio.get_event_loop()
-        except RuntimeError as ex:
-            logger.warning("get event loop error, try to new one", ex)
+        except RuntimeError:
             loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -155,15 +153,16 @@ class TaskExecutor:
             Context.set_runtime_context(self.context)
             self._do_execute()
         except Exception as e:
-            logger.exception(e)
+            console.print_exception()
             self.exception = e
             self.__status = RunStatus.FAILED
         else:
             self.__status = RunStatus.SUCCESS
         finally:
-            logger.info(
+            console.info(
                 f"finish {self.context}, status:{self.status}, error:{self.exception}"
             )
+            loop.close()
             return TaskResult(
                 id=self.index, status=self.status, exception=self.exception
             )

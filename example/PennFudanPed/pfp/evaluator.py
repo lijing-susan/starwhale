@@ -38,8 +38,9 @@ def get_mask_rcnn_model():
 
 
 @torch.no_grad()
-@evaluation.predict(resources={"nvidia.com/gpu": 1})
-def predict_mask_rcnn(data, index, **kw):
+@evaluation.predict(resources={"nvidia.com/gpu": 1}, replicas=2)
+def predict_mask_rcnn(data, external):
+    index = external["index"]
     if isinstance(index, str) and "_" in index and index.startswith("dataset-"):
         # v0.3.2 SDK index contains dataset name-version prefix, such as: 'dataset-pfp-small-d2zbajpbvotc7g7qwbev7lhqwvvu4k33qj5pehkf_PNGImages/FudanPed00001.png'
         # other versions index is the origin data row index
@@ -60,8 +61,8 @@ def predict_mask_rcnn(data, index, **kw):
 def cmp(ppl_result):
     pred_results, annotations = [], []
     for _data in ppl_result:
-        annotations.append(_data["ds_data"])
-        pred_results.append(_data["result"])
+        annotations.append(_data["input"])
+        pred_results.append(_data["output"])
 
     evaluator = make_coco_evaluator(annotations, iou_types=IOU_TYPES)
     for index, pred in pred_results:

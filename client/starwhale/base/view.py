@@ -7,10 +7,8 @@ import typing as t
 from functools import wraps
 
 from rich import box
-from rich import print as rprint
 from rich.panel import Panel
 from rich.table import Table
-from rich.pretty import Pretty
 
 from starwhale.utils import (
     Order,
@@ -27,10 +25,10 @@ from starwhale.consts import (
     STANDALONE_INSTANCE,
     ENV_BUILD_BUNDLE_FIXED_VERSION_FOR_TEST,
 )
-from starwhale.base.uri import URI
-from starwhale.base.type import URIType
 from starwhale.utils.error import FieldTypeOrValueError
 from starwhale.utils.config import SWCliConfigMixed
+from starwhale.base.uri.project import Project
+from starwhale.base.uri.resource import Resource, ResourceType
 
 if t.TYPE_CHECKING:
     from rich.console import RenderableType
@@ -50,7 +48,7 @@ class BaseTermView(SWCliConfigMixed):
                     title="Count Details",
                     title_align="left",
                 )
-                rprint(p)
+                console.print(p)
 
             rt = func(*args, **kwargs)  # type: ignore
             if isinstance(rt, tuple) and len(rt) == 2 and "total" in rt[1]:
@@ -70,7 +68,7 @@ class BaseTermView(SWCliConfigMixed):
             # type: ignore
         )
         p = Panel(grid, title="Starwhale Instance", title_align="left")
-        rprint(p)
+        console.print(p)
 
     @staticmethod
     def _header(func: t.Callable) -> t.Callable:
@@ -135,10 +133,10 @@ class BaseTermView(SWCliConfigMixed):
 
     @staticmethod
     def prepare_build_bundle(
-        project: str, bundle_name: str, typ: str, auto_gen_version: bool = True
-    ) -> URI:
+        project: str, bundle_name: str, typ: ResourceType, auto_gen_version: bool = True
+    ) -> Resource:
         console.print(f":construction: start to build {typ} bundle...")
-        _project_uri = URI(project, expected_type=URIType.PROJECT)
+        project_uri = Project(project)
         if not bundle_name:
             raise FieldTypeOrValueError("no bundle_name")
 
@@ -149,12 +147,10 @@ class BaseTermView(SWCliConfigMixed):
                 or gen_uniq_version()
             )
 
-        _uri = URI.capsulate_uri(
-            instance=_project_uri.instance,
-            project=_project_uri.project,
-            obj_type=typ,
-            obj_name=bundle_name,
-            obj_ver=obj_ver,
+        _uri = Resource(
+            f"{bundle_name}/version/{obj_ver}",
+            project=project_uri,
+            typ=typ,
         )
         console.print(f":construction_worker: uri {_uri}")
         return _uri
@@ -176,23 +172,6 @@ class BaseTermView(SWCliConfigMixed):
             title, data, custom_header, custom_column=custom_column
         )
         return history
-
-    @staticmethod
-    def _print_info(_info: t.Dict[str, t.Any], fullname: bool = False) -> None:
-        if not _info:
-            console.print(":tea: not found info")
-            return
-
-        _history = _info.pop("history", [])
-
-        console.rule("[green bold]Inspect Details")
-        console.print(Pretty(_info, expand_all=True))
-
-        if _history:
-            console.rule("[green bold] Version History")
-            BaseTermView._print_history(
-                title="History List", history=_history, fullname=fullname
-            )
 
     @staticmethod
     def _print_list(
@@ -316,21 +295,6 @@ class BaseTermView(SWCliConfigMixed):
         console.print(table)
 
     @staticmethod
-    def get_info_data(
-        _info: t.Dict[str, t.Any], fullname: bool = False
-    ) -> t.Dict[str, t.Any]:
-        if not _info:
-            return dict()
-
-        result = _info
-        _history = _info.pop("history", [])
-
-        if _history:
-            result["history"] = BaseTermView.get_history_data(_history, fullname)
-
-        return result
-
-    @staticmethod
     def get_history_data(
         history: t.List[t.Dict[str, t.Any]],
         fullname: bool = False,
@@ -354,8 +318,8 @@ class BaseTermView(SWCliConfigMixed):
         return result
 
     @staticmethod
-    def must_have_project(uri: URI) -> None:
-        if uri.project:
+    def must_have_project(uri: Project) -> None:
+        if uri.name:
             return
         console.print(
             "Please specify the project uri with --project or set the default project for current instance"

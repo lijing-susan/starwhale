@@ -1,4 +1,5 @@
 import os
+import json
 import typing as t
 import pathlib
 import tempfile
@@ -25,24 +26,27 @@ from starwhale.consts import (
     EVALUATION_PANEL_LAYOUT_JSON_FILE_NAME,
     EVALUATION_PANEL_LAYOUT_YAML_FILE_NAME,
 )
-from starwhale.base.uri import URI
 from starwhale.utils.fs import empty_dir, ensure_dir, ensure_file, blake2b_file
-from starwhale.base.type import URIType, BundleType
+from starwhale.base.type import BundleType
 from starwhale.api.service import Service
-from starwhale.utils.error import FieldTypeOrValueError
+from starwhale.utils.error import ExistedError, NotFoundError
 from starwhale.utils.config import SWCliConfigMixed
 from starwhale.api._impl.job import Handler
+from starwhale.core.job.store import JobStorage
 from starwhale.core.model.cli import _list as list_cli
 from starwhale.core.model.cli import _serve as serve_cli
 from starwhale.core.model.cli import _prepare_model_run_args
 from starwhale.core.model.view import ModelTermView, ModelTermViewJson
+from starwhale.base.uri.project import Project
 from starwhale.core.model.model import (
+    CloudModel,
     ModelConfig,
     ModelInfoFilter,
     StandaloneModel,
     resource_to_file_node,
 )
 from starwhale.core.model.store import ModelStorage
+from starwhale.base.uri.resource import Resource, ResourceType
 from starwhale.core.instance.view import InstanceTermView
 from starwhale.base.scheduler.step import Step
 from starwhale.core.runtime.process import Process
@@ -77,6 +81,14 @@ class StandaloneModelTestCase(TestCase):
     @patch("starwhale.core.model.model.StandaloneModel._get_service")
     @patch("starwhale.core.model.model.Walker.files")
     @patch("starwhale.core.model.model.blake2b_file")
+    @patch(
+        "starwhale.base.uri.resource.Resource._refine_local_rc_info",
+        MagicMock(),
+    )
+    @patch(
+        "starwhale.base.uri.resource.Resource._refine_remote_rc_info",
+        MagicMock(),
+    )
     def test_build_workflow(
         self,
         m_blake_file: MagicMock,
@@ -102,6 +114,7 @@ class StandaloneModelTestCase(TestCase):
         m_stat.return_value.st_size = 1
         m_blake_file.return_value = "123456"
         m_walker_files.return_value = []
+        m_copy_dir.return_value = 0
 
         svc = MagicMock(spec=Service)
         svc.get_spec.return_value = {}
@@ -112,16 +125,19 @@ class StandaloneModelTestCase(TestCase):
             Path(self.workdir) / DefaultYAMLName.MODEL
         )
 
-        model_uri = URI(self.name, expected_type=URIType.MODEL)
+        model_uri = Resource(
+            self.name,
+            typ=ResourceType.model,
+        )
         sm = StandaloneModel(model_uri)
         sm.build(workdir=Path(self.workdir), model_config=model_config)
 
-        build_version = sm.uri.object.version
+        build_version = sm.uri.version
 
         bundle_path = (
             self.sw.rootdir
             / "self"
-            / URIType.MODEL
+            / ResourceType.model.value
             / self.name
             / build_version[:VERSION_PREFIX_CNT]
             / f"{build_version}{BundleType.MODEL}"
@@ -192,13 +208,19 @@ class StandaloneModelTestCase(TestCase):
         assert _resource_files == []
 
         assert m_copy_dir.call_count == 1
-        assert m_copy_dir.call_args_list[0][0][0] == "/home/starwhale/myproject"
-        assert m_copy_dir.call_args_list[0][0][1].endswith("/src")
+        assert (
+            str(m_copy_dir.call_args_list[0][1]["src_dir"])
+            == "/home/starwhale/myproject"
+        )
+        assert str(m_copy_dir.call_args_list[0][1]["dst_dir"]).endswith("/src")
 
         assert bundle_path.exists()
         assert "latest" in sm.tag.list()
 
-        model_uri = URI(f"mnist/version/{build_version}", expected_type=URIType.MODEL)
+        model_uri = Resource(
+            f"mnist/version/{build_version}",
+            typ=ResourceType.model,
+        )
         sm = StandaloneModel(model_uri)
         _info = sm.info()
 
@@ -206,22 +228,23 @@ class StandaloneModelTestCase(TestCase):
         assert _info["basic"]["name"] == self.name
         assert "size" in _info["basic"]
 
-        _list, _ = StandaloneModel.list(URI(""))
+        _list, _ = StandaloneModel.list(Project(""))
         assert len(_list) == 1
         assert not _list[self.name][0]["is_removed"]
 
-        model_uri = URI(
-            f"{self.name}/version/{build_version}", expected_type=URIType.MODEL
+        model_uri = Resource(
+            f"{self.name}/version/{build_version}",
+            typ=ResourceType.model,
         )
         sd = StandaloneModel(model_uri)
         _ok, _ = sd.remove(False)
         assert _ok
 
-        _list, _ = StandaloneModel.list(URI(""))
+        _list, _ = StandaloneModel.list(Project(""))
         assert _list[self.name][0]["is_removed"]
 
         _ok, _ = sd.recover(True)
-        _list, _ = StandaloneModel.list(URI(""))
+        _list, _ = StandaloneModel.list(Project(""))
         assert not _list[self.name][0]["is_removed"]
 
         fname = f"{self.name}/version/{build_version}"
@@ -230,7 +253,11 @@ class StandaloneModelTestCase(TestCase):
             ModelTermViewJson(fname).info(f)
 
         ModelTermView(fname).diff(
-            URI(fname, expected_type=URIType.MODEL), show_details=False
+            Resource(
+                fname,
+                ResourceType.model,
+            ),
+            show_details=False,
         )
         ModelTermView(fname).history()
         ModelTermView(fname).remove()
@@ -240,32 +267,43 @@ class StandaloneModelTestCase(TestCase):
 
         _ok, _ = sd.remove(True)
         assert _ok
-        _list, _ = StandaloneModel.list(URI(""))
+        _list, _ = StandaloneModel.list(Project(""))
         assert len(_list[self.name]) == 0
 
         ModelTermView.build(
-            workdir=self.workdir, project="self", model_config=model_config
+            workdir=self.workdir,
+            project="self",
+            model_config=model_config,
+            add_all=False,
         )
 
+    @patch("starwhale.base.uri.resource.Resource._refine_local_rc_info")
+    @patch("starwhale.core.model.model.ModelConfig.do_validate")
     @patch("starwhale.core.model.model.StandaloneModel._make_meta_tar")
     @patch("starwhale.core.model.model.StandaloneModel._gen_model_serving")
     @patch("starwhale.core.model.model.generate_jobs_yaml")
+    @patch("starwhale.utils.config.load_swcli_config")
     @patch("starwhale.core.runtime.process.Process.run", autospec=True)
     @patch("starwhale.core.runtime.process.guess_python_env_mode")
     @patch("starwhale.core.runtime.process.StandaloneRuntime.restore")
     @patch("starwhale.core.runtime.process.extract_tar")
-    @patch("starwhale.core.model.model.ModelConfig.do_validate")
     def test_build_with_package_runtime(
         self,
-        m_do_validate: MagicMock,
         m_extract: MagicMock,
         m_restore: MagicMock,
         m_env_mode: MagicMock,
         m_process_run: MagicMock,
-        m_generate_jobs_yaml: MagicMock,
-        m_gen_model_serving: MagicMock,
-        m_make_meta_tar: MagicMock,
+        m_conf: MagicMock,
+        *args: t.Any,
     ) -> None:
+        m_conf.return_value = {
+            "instances": {
+                "foo": {"uri": "http://localhost", "sw_token": "token"},
+                "local": {"uri": "local", "current_project": "self"},
+            },
+            "current_instance": "local",
+            "storage": {"root": self.sw.rootdir},
+        }
         workdir = Path("/home/test/workdir")
         ensure_dir(workdir)
         model_name = "test"
@@ -295,6 +333,7 @@ class StandaloneModelTestCase(TestCase):
                 project="self",
                 model_config=model_config,
                 package_runtime=True,
+                add_all=False,
             )
 
         def _run_without_package_runtime(obj: t.Any) -> None:
@@ -304,14 +343,16 @@ class StandaloneModelTestCase(TestCase):
                 project="self",
                 model_config=model_config,
                 package_runtime=False,
+                add_all=False,
             )
 
         m_process_run.side_effect = _run_with_package_runtime
         version = os.environ[
             "SW_BUILD_BUNDLE_FIXED_VERSION_FOR_TEST"
         ] = gen_uniq_version()
-        packaged_uri = URI(
-            f"{model_name}/version/{version}", expected_type=URIType.MODEL
+        packaged_uri = Resource(
+            f"{model_name}/version/{version}",
+            typ=ResourceType.model,
         )
         ModelTermView.build(
             workdir=workdir,
@@ -319,9 +360,10 @@ class StandaloneModelTestCase(TestCase):
             model_config=model_config,
             runtime_uri="pytorch/version/1234",
             package_runtime=True,
+            add_all=False,
         )
 
-        assert not m_extract.called
+        assert m_extract.called
         assert m_restore.called
         assert m_restore.call_args[0][0] == runtime_snapshot
 
@@ -342,8 +384,9 @@ class StandaloneModelTestCase(TestCase):
         version = os.environ[
             "SW_BUILD_BUNDLE_FIXED_VERSION_FOR_TEST"
         ] = gen_uniq_version()
-        no_packaged_uri = URI(
-            f"{model_name}/version/{version}", expected_type=URIType.MODEL
+        no_packaged_uri = Resource(
+            f"{model_name}/version/{version}",
+            typ=ResourceType.model,
         )
         ModelTermView.build(
             workdir=workdir,
@@ -351,6 +394,7 @@ class StandaloneModelTestCase(TestCase):
             model_config=model_config,
             runtime_uri=pytorch_runtime_uri,
             package_runtime=False,
+            add_all=False,
         )
 
         built_model_store = ModelStorage(no_packaged_uri)
@@ -373,8 +417,9 @@ class StandaloneModelTestCase(TestCase):
         version = os.environ[
             "SW_BUILD_BUNDLE_FIXED_VERSION_FOR_TEST"
         ] = gen_uniq_version()
-        use_model_uri = URI(
-            f"{model_name}/version/{version}", expected_type=URIType.MODEL
+        use_model_uri = Resource(
+            f"{model_name}/version/{version}",
+            typ=ResourceType.model,
         )
 
         ModelTermView.build(
@@ -383,6 +428,7 @@ class StandaloneModelTestCase(TestCase):
             model_config=model_config,
             runtime_uri=pytorch_runtime_uri,
             package_runtime=True,
+            add_all=False,
         )
 
         built_model_store = ModelStorage(use_model_uri)
@@ -397,17 +443,6 @@ class StandaloneModelTestCase(TestCase):
         runtime_bundle_path = built_model_store.packaged_runtime_bundle_path
         assert runtime_bundle_path.exists()
         assert runtime_bundle_path.read_text() == "1"
-
-        with self.assertRaisesRegex(
-            FieldTypeOrValueError, "is not a valid uri, only support model"
-        ):
-            ModelTermView.build(
-                workdir=workdir,
-                project="self",
-                model_config=model_config,
-                runtime_uri="dataset/test/version/123",
-                package_runtime=True,
-            )
 
     def test_get_file_desc(self):
         _file = Path("tmp/file.txt")
@@ -482,7 +517,7 @@ class StandaloneModelTestCase(TestCase):
         base_bundle_path = (
             self.sw.rootdir
             / "self"
-            / URIType.MODEL
+            / ResourceType.model.value
             / self.name
             / base_version[:VERSION_PREFIX_CNT]
             / f"{base_version}{BundleType.MODEL}"
@@ -496,7 +531,7 @@ class StandaloneModelTestCase(TestCase):
         compare_bundle_path = (
             self.sw.rootdir
             / "self"
-            / URIType.MODEL
+            / ResourceType.model.value
             / self.name
             / compare_version[:VERSION_PREFIX_CNT]
             / f"{compare_version}{BundleType.MODEL}"
@@ -507,13 +542,17 @@ class StandaloneModelTestCase(TestCase):
             parents=True,
         )
 
-        base_model_uri = URI(
-            f"{self.name}/version/{base_version}", expected_type=URIType.MODEL
+        base_model_uri = Resource(
+            f"{self.name}/version/{base_version}",
+            typ=ResourceType.model,
         )
         sm = StandaloneModel(base_model_uri)
 
         diff_info = sm.diff(
-            URI(f"{self.name}/version/{compare_version}", expected_type=URIType.MODEL)
+            Resource(
+                f"{self.name}/version/{compare_version}",
+                typ=ResourceType.model,
+            )
         )
         assert len(diff_info) == 3
         # 4 files and 1 added
@@ -529,6 +568,37 @@ class StandaloneModelTestCase(TestCase):
             diff_info["compare_version"]["src/runtime.yaml"].flag == FileFlag.UNCHANGED
         )
         assert diff_info["compare_version"]["src/model.yaml"].flag == FileFlag.UNCHANGED
+
+    def test_extract(self) -> None:
+        target = Path("/home/workdir/target_no_exist")
+
+        with self.assertRaises(NotFoundError):
+            ModelTermView("not-found/version/dummy").extract(force=False, target=target)
+
+        bundle_path = (
+            self.sw.rootdir
+            / "self"
+            / ResourceType.model.value
+            / self.name
+            / "12"
+            / "1234.swmp"
+        )
+        ensure_dir(bundle_path)
+        uri = Resource("mnist/version/1234", typ=ResourceType.model, refine=True)
+        with self.assertRaises(NotFoundError):
+            ModelTermView(uri).extract(force=False, target=target)
+
+        ensure_file(bundle_path / "src" / "model.yaml", "test", parents=True)
+        ensure_file(bundle_path / "src" / "inner" / "svc.yaml", "test", parents=True)
+        ModelTermView(uri).extract(force=False, target=target)
+
+        assert (target / "model.yaml").read_text() == "test"
+
+        with self.assertRaises(ExistedError):
+            ModelTermView(uri).extract(force=False, target=target)
+
+        ModelTermView(uri).extract(force=True, target=target)
+        assert (target / "model.yaml").read_text() == "test"
 
     @patch("starwhale.base.scheduler.Step.get_steps_from_yaml")
     @patch("starwhale.core.model.model.generate_jobs_yaml")
@@ -562,42 +632,71 @@ class StandaloneModelTestCase(TestCase):
             ),
         ]
         model_config = ModelConfig(name="test", run={"handlers": ["mock-module"]})
+        project = "test"
+        version = "qwertyuiop"
         StandaloneModel.run(
             model_src_dir=Path(self.workdir),
             model_config=model_config,
-            project="test",
-            version="qwertyuiop",
+            project=project,
+            version=version,
             dataset_uris=["mnist/version/latest"],
             scheduler_run_args={
                 "step_name": "ppl",
                 "task_index": 0,
             },
+            force_generate_jobs_yaml=True,
         )
         schedule_all_mock.assert_not_called()
         single_step_mock.assert_not_called()
         single_task_mock.assert_called_once()
 
+        job_dir = JobStorage.local_run_dir(project, version)
+        job_manifest = load_yaml(job_dir / "_manifest.yaml")
+        model_src_dir = job_manifest["model_src_dir"]
+        assert model_src_dir != str(Path(self.workdir).resolve())
+        assert model_src_dir == str(job_dir / "snapshot")
+        assert not os.path.exists(model_src_dir)
+        assert Path.cwd() == Path(model_src_dir)
+
+        version = "zxcvbnm"
         StandaloneModel.run(
             model_src_dir=Path(self.workdir),
             model_config=model_config,
-            project="test",
-            version="qwertyuiop",
+            project=project,
+            version=version,
             dataset_uris=["mnist/version/latest"],
             scheduler_run_args={
                 "step_name": "ppl",
                 "task_index": -1,
             },
+            forbid_snapshot=True,
         )
         single_step_mock.assert_called_once()
+        job_dir = JobStorage.local_run_dir(project, version)
+        job_manifest = load_yaml(job_dir / "_manifest.yaml")
+        model_src_dir = job_manifest["model_src_dir"]
+        assert model_src_dir == str(Path(self.workdir).resolve())
+        assert model_src_dir != str(job_dir / "snapshot")
+        assert os.path.exists(model_src_dir)
+        assert Path.cwd() == Path(model_src_dir)
 
+        version = "asdfghjkl"
         StandaloneModel.run(
             model_src_dir=Path(self.workdir),
             model_config=model_config,
-            project="test",
-            version="qwertyuiop",
+            project=project,
+            version=version,
             dataset_uris=["mnist/version/latest"],
+            cleanup_snapshot=False,
         )
         schedule_all_mock.assert_called_once()
+        job_dir = JobStorage.local_run_dir(project, version)
+        job_manifest = load_yaml(job_dir / "_manifest.yaml")
+        model_src_dir = job_manifest["model_src_dir"]
+        assert model_src_dir != str(Path(self.workdir).resolve())
+        assert model_src_dir == str(job_dir / "snapshot")
+        assert os.path.exists(model_src_dir)
+        assert Path.cwd() == Path(model_src_dir)
 
     @Mocker()
     @patch("starwhale.core.model.model.CloudModel.list")
@@ -648,6 +747,10 @@ class StandaloneModelTestCase(TestCase):
             m_call.assert_called_once_with("hi", shell=True)
 
     @patch("starwhale.core.model.model.ModelConfig.do_validate")
+    @patch(
+        "starwhale.base.uri.resource.Resource._refine_local_rc_info",
+        MagicMock(),
+    )
     def test_prepare_model_run_args(self, *args: t.Any) -> None:
         user_workdir = Path("/home/user/workdir")
 
@@ -707,6 +810,22 @@ class StandaloneModelTestCase(TestCase):
                 {
                     "model": "",
                     "runtime": "",
+                    "workdir": user_workdir / "child" / "..",
+                    "modules": "",
+                    "model_yaml": None,
+                    "forbid_packaged_runtime": False,
+                },
+                {
+                    "model_src_dir": user_workdir,
+                    "config_name": "default",
+                    "config_modules": ["a.b.c"],
+                    "runtime_uri": None,
+                },
+            ),
+            (
+                {
+                    "model": "",
+                    "runtime": "",
                     "workdir": user_workdir,
                     "modules": "",
                     "model_yaml": "/home/user/workdir/custom_model.yaml",
@@ -732,8 +851,9 @@ class StandaloneModelTestCase(TestCase):
                     "model_src_dir": model_snapshot_src_dir,
                     "config_name": "built-model",
                     "config_modules": ["x.y.z"],
-                    "runtime_uri": URI(
-                        "model-test/version/1234", expected_type=URIType.MODEL
+                    "runtime_uri": Resource(
+                        "model-test/version/1234",
+                        typ=ResourceType.model,
                     ),
                 },
             ),
@@ -750,8 +870,9 @@ class StandaloneModelTestCase(TestCase):
                     "model_src_dir": model_snapshot_src_dir,
                     "config_name": "built-model",
                     "config_modules": ["x.y.z"],
-                    "runtime_uri": URI(
-                        "runtime-test/version/1234", expected_type=URIType.RUNTIME
+                    "runtime_uri": Resource(
+                        "runtime-test/version/1234",
+                        typ=ResourceType.runtime,
                     ),
                 },
             ),
@@ -781,11 +902,15 @@ class StandaloneModelTestCase(TestCase):
             if runtime_uri is None:
                 assert expect["runtime_uri"] is None
             else:
-                assert expect["runtime_uri"].full_uri == runtime_uri.full_uri  # type: ignore
+                assert expect["runtime_uri"] == runtime_uri
 
     @patch("starwhale.core.model.model.ModelConfig.do_validate")
     @patch("starwhale.core.model.model.StandaloneModel")
     @patch("starwhale.core.model.model.StandaloneModel.serve")
+    @patch(
+        "starwhale.base.uri.resource.Resource._refine_local_rc_info",
+        MagicMock(),
+    )
     @patch("starwhale.core.model.view.RuntimeProcess")
     def test_serve(self, *args: t.Any):
         host = "127.0.0.1"
@@ -860,6 +985,69 @@ class StandaloneModelTestCase(TestCase):
 class CloudModelTest(TestCase):
     def setUp(self) -> None:
         sw_config._config = {}
+
+    @Mocker()
+    @patch("starwhale.utils.config.load_swcli_config")
+    def test_run(self, rm: Mocker, load_conf: MagicMock) -> None:
+        load_conf.return_value = {"instances": {"foo": {"uri": "https://foo.com"}}}
+        rm.get(
+            "https://foo.com/api/v1/project/starwhale/model/mnist",
+            json={
+                "data": {
+                    "versionId": "100",
+                    "name": "mnist",
+                    "versionName": "123456a",
+                }
+            },
+        )
+        rm.get(
+            "https://foo.com/api/v1/project/starwhale/dataset/mnist",
+            json={
+                "data": {
+                    "versionId": "200",
+                    "name": "mnist",
+                    "versionName": "223456a",
+                }
+            },
+        )
+        rm.get(
+            "https://foo.com/api/v1/project/starwhale/runtime/mnist",
+            json={
+                "data": {
+                    "versionId": "300",
+                    "name": "mnist",
+                    "versionName": "323456a",
+                }
+            },
+        )
+        rm.post(
+            "https://foo.com/api/v1/project/starwhale/job", json={"data": "success"}
+        )
+        result, data = CloudModel.run(
+            project_uri=Project("https://foo.com/project/starwhale"),
+            model_uri="mnist/version/123456a",
+            dataset_uris=["mnist/version/223456a"],
+            runtime_uri="mnist/version/323456a",
+            resource_pool="default",
+            run_handler="test:predict",
+        )
+        assert result
+        assert data == "success"
+        assert rm.call_count == 4
+        assert rm.request_history[0].qs == {"versionurl": ["123456a"]}
+        assert rm.request_history[0].method == "GET"
+        assert rm.request_history[1].qs == {"versionurl": ["223456a"]}
+        assert rm.request_history[1].method == "GET"
+        assert rm.request_history[2].qs == {"versionurl": ["323456a"]}
+        assert rm.request_history[2].method == "GET"
+        assert json.loads(rm.request_history[3].text) == {
+            "modelVersionUrl": "100",
+            "datasetVersionUrls": "200",
+            "runtimeVersionUrl": "300",
+            "resourcePool": "default",
+            "handler": "test:predict",
+        }
+        assert rm.request_history[3].method == "POST"
 
     def test_cli_list(self) -> None:
         mock_obj = MagicMock()
@@ -936,16 +1124,19 @@ def test_build_with_custom_config_file(
 
     model_config = ModelConfig.create_by_yaml(workdir / cfg)
 
-    model_uri = URI(name, expected_type=URIType.MODEL)
+    model_uri = Resource(
+        name,
+        typ=ResourceType.model,
+    )
     sm = StandaloneModel(model_uri)
     sm.build(workdir=workdir, model_config=model_config)
 
-    build_version = sm.uri.object.version
+    build_version = sm.uri.version
 
     bundle_path = (
         tmp_path
         / "self"
-        / URIType.MODEL
+        / ResourceType.model.value
         / name
         / build_version[:VERSION_PREFIX_CNT]
         / f"{build_version}{BundleType.MODEL}"
@@ -974,7 +1165,10 @@ def test_render_eval_layout(m_sw_config: MagicMock, m_g: MagicMock, tmp_path: Pa
         "current_instance": "local",
     }
     name = "bar"
-    model_uri = URI(name, expected_type=URIType.MODEL)
+    model_uri = Resource(
+        name,
+        typ=ResourceType.model,
+    )
     sm = StandaloneModel(model_uri)
 
     workdir = tmp_path / name
@@ -985,11 +1179,11 @@ def test_render_eval_layout(m_sw_config: MagicMock, m_g: MagicMock, tmp_path: Pa
     # no error should be raised
     sm.build(workdir=workdir, model_config=model_config)
 
-    build_version = sm.uri.object.version
+    build_version = sm.uri.version
     bundle_path = (
         tmp_path
         / "self"
-        / URIType.MODEL
+        / ResourceType.model.value
         / name
         / build_version[:VERSION_PREFIX_CNT]
         / f"{build_version}{BundleType.MODEL}"

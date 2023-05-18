@@ -27,6 +27,8 @@ public interface StorageAccessService {
 
     StorageObjectInfo head(String path) throws IOException;
 
+    StorageObjectInfo head(String path, boolean md5sum) throws IOException;
+
     void put(String path, InputStream inputStream, long size) throws IOException;
 
     void put(String path, byte[] body) throws IOException;
@@ -50,4 +52,6 @@ public interface StorageAccessService {
      * @throws IOException any possible IO exception
      */
     String signedUrl(String path, Long expTimeMillis) throws IOException;
+
+    String signedPutUrl(String path, Long expTimeMillis) throws IOException;
 }

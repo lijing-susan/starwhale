@@ -6,10 +6,9 @@ from enum import Enum, unique
 from typing import Any, Dict, List, Union, Callable, Iterator, Optional
 from functools import lru_cache
 
-import dill
 import requests
-from loguru import logger
 
+from starwhale.utils import console
 from starwhale.consts import VERSION_PREFIX_CNT, STANDALONE_INSTANCE
 from starwhale.consts.env import SWEnv
 from starwhale.utils.retry import http_retry
@@ -35,8 +34,8 @@ class Logger:
                 try:
                     writer.close()
                 except Exception as e:
-                    logger.exception(f"{writer} exception: {e}")
                     exceptions.append(e)
+                    console.print_exception()
 
             if exceptions:
                 raise Exception(*exceptions)
@@ -66,14 +65,6 @@ class Logger:
     def _delete(self, table_name: str, key: Any) -> None:
         writer = self._fetch_writer(table_name)
         writer.delete(key)
-
-
-def _serialize(data: Any) -> Any:
-    return dill.dumps(data)
-
-
-def _deserialize(data: bytes) -> Any:
-    return dill.loads(data)
 
 
 table_name_formatter: Callable[
@@ -116,6 +107,8 @@ def _get_remote_project_id(instance_uri: str, project: str) -> Any:
 
 
 class Evaluation(Logger):
+    _ID_KEY = "id"
+
     def __init__(self, eval_id: str, project: str, instance: str = ""):
         if not eval_id:
             raise RuntimeError("eval id should not be None")
@@ -164,28 +157,18 @@ class Evaluation(Logger):
         _storage_table_name = self._get_storage_table_name(table_name)
         return super()._flush(_storage_table_name)
 
-    def log_result(
-        self,
-        data_id: Union[int, str],
-        result: Any,
-        serialize: bool = False,
-        **kwargs: Any,
-    ) -> None:
-        record = {"id": data_id, "result": _serialize(result) if serialize else result}
-        for k, v in kwargs.items():
-            record[k.lower()] = _serialize(v) if serialize else v
-
+    def log_result(self, record: Dict) -> None:
         self._log(self._eval_table_name("results"), record)
 
     def log_metrics(
         self, metrics: Optional[Dict[str, Any]] = None, **kwargs: Any
     ) -> None:
-        record = {"id": self.eval_id}
+        record = {self._ID_KEY: self.eval_id}
         # TODO: without if else?
         if metrics is not None:
             for k, v in metrics.items():
                 k = k.lower()
-                if k != "id":
+                if k != self._ID_KEY:
                     record[k] = v
         else:
             for k, v in kwargs.items():
@@ -199,18 +182,12 @@ class Evaluation(Logger):
             record[k.lower()] = v
         self._log(self._eval_table_name(table_name), record)
 
-    def get_results(self, deserialize: bool = False) -> Iterator[Dict[str, Any]]:
-        for data in self._get(self._eval_table_name("results")):
-            if deserialize:
-                for _k, _v in data.items():
-                    if _k == "id":
-                        continue
-                    data[_k] = _deserialize(_v)
-            yield data
+    def get_results(self) -> Iterator[Dict[str, Any]]:
+        return self._get(self._eval_table_name("results"))
 
     def get_metrics(self) -> Dict[str, Any]:
         for metrics in self._get(self._eval_summary_table_name):
-            if metrics["id"] == self.eval_id:
+            if metrics[self._ID_KEY] == self.eval_id:
                 return metrics
 
         return {}

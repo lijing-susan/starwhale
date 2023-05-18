@@ -22,6 +22,8 @@ import ai.starwhale.mlops.storage.StorageAccessService;
 import ai.starwhale.mlops.storage.StorageObjectInfo;
 import ai.starwhale.mlops.storage.s3.S3Config;
 import ai.starwhale.mlops.storage.util.MetaHelper;
+import com.aliyun.oss.ClientBuilderConfiguration;
+import com.aliyun.oss.HttpMethod;
 import com.aliyun.oss.OSS;
 import com.aliyun.oss.OSSClientBuilder;
 import com.aliyun.oss.OSSErrorCode;
@@ -56,18 +58,29 @@ public class StorageAccessServiceAliyun implements StorageAccessService {
     public StorageAccessServiceAliyun(S3Config s3Config) {
         this.bucket = s3Config.getBucket();
         this.partSize = s3Config.getHugeFilePartSize();
+
+        var config = new ClientBuilderConfiguration();
+        config.setRequestTimeoutEnabled(true);
         this.ossClient = new OSSClientBuilder()
-                .build(s3Config.getEndpoint(), s3Config.getAccessKey(), s3Config.getSecretKey());
+                .build(s3Config.getEndpoint(), s3Config.getAccessKey(), s3Config.getSecretKey(), config);
     }
 
     @Override
     public StorageObjectInfo head(String path) throws IOException {
+        return this.head(path, false);
+    }
+
+    @Override
+    public StorageObjectInfo head(String path, boolean md5sum) throws IOException {
         try {
             var resp = this.ossClient.headObject(new HeadObjectRequest(this.bucket, path));
-            return new StorageObjectInfo(true, resp.getContentLength(), MetaHelper.mapToString(resp.getUserMetadata()));
+            return new StorageObjectInfo(true,
+                    resp.getContentLength(),
+                    md5sum ? resp.getETag().replace("\"", "") : null,
+                    MetaHelper.mapToString(resp.getUserMetadata()));
         } catch (OSSException e) {
             if (e.getErrorCode().equals(OSSErrorCode.NO_SUCH_KEY)) {
-                return new StorageObjectInfo(false, 0L, null);
+                return new StorageObjectInfo(false, 0L, null, null);
             }
             throw e;
         }
@@ -160,6 +173,15 @@ public class StorageAccessServiceAliyun implements StorageAccessService {
     @Override
     public String signedUrl(String path, Long expTimeMillis) throws IOException {
         return ossClient.generatePresignedUrl(this.bucket, path, new Date(System.currentTimeMillis() + expTimeMillis))
+                .toString();
+    }
+
+    @Override
+    public String signedPutUrl(String path, Long expTimeMillis) throws IOException {
+        return ossClient.generatePresignedUrl(this.bucket,
+                        path,
+                        new Date(System.currentTimeMillis() + expTimeMillis),
+                        HttpMethod.PUT)
                 .toString();
     }
 }

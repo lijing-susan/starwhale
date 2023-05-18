@@ -17,6 +17,7 @@ ENV_SW_LOCAL_STORAGE = "SW_LOCAL_STORAGE"
 
 DEFAULT_STARWHALE_API_VERSION = "1.0"
 DEFAULT_MANIFEST_NAME = "_manifest.yaml"
+SW_BUILT_IN = "starwhale-built-in"
 
 # evaluation related constants
 DEFAULT_JOBS_FILE_NAME = "jobs.yaml"
@@ -92,6 +93,7 @@ class SupportOS:
 
 
 FMT_DATETIME = "%Y-%m-%d %H:%M:%S %Z"
+MINI_FMT_DATETIME = "%H:%M:%S"
 
 # TODO: use better DEFAULT words?
 DEFAULT_COPY_WORKERS = 4

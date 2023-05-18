@@ -17,7 +17,7 @@ class CIFAR100Inference(PipelineHandler):
         )
         self.model = ViTForImageClassification.from_pretrained(str(ROOTDIR / "models"))
 
-    def ppl(self, data: dict, **kw):
+    def ppl(self, data: dict):
         with PILImage.open(io.BytesIO(data.pop("image").to_bytes())) as img:
             inputs = self.feature_extractor(images=img, return_tensors="pt")
             logits = self.model(**inputs).logits
@@ -33,6 +33,6 @@ class CIFAR100Inference(PipelineHandler):
     def cmp(self, ppl_result):
         result, label = [], []
         for _data in ppl_result:
-            label.append(_data["ds_data"]["fine_label"])
-            result.extend(_data["result"])
+            label.append(_data["input"]["fine_label"])
+            result.extend(_data["output"])
         return label, result

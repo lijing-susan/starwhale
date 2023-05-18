@@ -1,40 +1,30 @@
 from __future__ import annotations
 
-import io
-import sys
 import time
 import typing as t
-import logging
+import inspect
 import threading
-from abc import ABCMeta, abstractmethod
+from abc import ABCMeta
 from types import TracebackType
 from pathlib import Path
 from functools import wraps
 
+import dill
 import jsonlines
 
-from starwhale.utils import now_str
+from starwhale.utils import console, now_str
 from starwhale.consts import RunStatus, CURRENT_FNAME, DecoratorInjectAttr
-from starwhale.base.uri import URI
 from starwhale.utils.fs import ensure_dir, ensure_file
 from starwhale.api._impl import wrapper
-from starwhale.base.type import URIType, RunSubDirType
-from starwhale.utils.log import StreamWrapper
+from starwhale.base.type import RunSubDirType, PredictLogMode
 from starwhale.api.service import Input, Output, Service
 from starwhale.utils.error import ParameterError, FieldTypeOrValueError
 from starwhale.base.context import Context
 from starwhale.core.job.store import JobStorage
 from starwhale.api._impl.dataset import Dataset
-from starwhale.core.dataset.tabular import TabularDatasetRow
-
-if t.TYPE_CHECKING:
-    import loguru
-
-
-class _LogType:
-    SW = "starwhale"
-    USER = "user"
-
+from starwhale.base.uri.resource import Resource, ResourceType
+from starwhale.core.dataset.type import JsonDict
+from starwhale.core.dataset.tabular import TabularDatasetRow, TabularDatasetInfo
 
 _jl_writer: t.Callable[[Path], jsonlines.Writer] = lambda p: jsonlines.open(
     str((p).resolve()), mode="w"
@@ -42,41 +32,39 @@ _jl_writer: t.Callable[[Path], jsonlines.Writer] = lambda p: jsonlines.open(
 
 
 class PipelineHandler(metaclass=ABCMeta):
+    _INPUT_PREFIX = "input/"
+
     def __init__(
         self,
-        ppl_batch_size: int = 1,
-        ignore_dataset_data: bool = False,
+        predict_batch_size: int = 1,
         ignore_error: bool = False,
         flush_result: bool = False,
-        ppl_auto_log: bool = True,
+        predict_auto_log: bool = True,
+        predict_log_mode: str = PredictLogMode.PICKLE.value,
+        predict_log_dataset_features: t.Optional[t.List[str]] = None,
         dataset_uris: t.Optional[t.List[str]] = None,
+        **kwargs: t.Any,
     ) -> None:
-        self.ppl_batch_size = ppl_batch_size
+        self.predict_batch_size = predict_batch_size
         self.svc = Service()
         self.context = Context.get_runtime_context()
 
         self.dataset_uris = self.context.dataset_uris or dataset_uris or []
 
-        # TODO: add args for compare result and label directly
-        self.ignore_dataset_data = ignore_dataset_data
+        self.predict_log_dataset_features = predict_log_dataset_features
         self.ignore_error = ignore_error
         self.flush_result = flush_result
-        self.ppl_auto_log = ppl_auto_log
+        self.predict_auto_log = predict_auto_log
+        self.predict_log_mode = PredictLogMode(predict_log_mode)
+        self.kwargs = kwargs
 
         _logdir = JobStorage.local_run_dir(self.context.project, self.context.version)
         _run_dir = (
             _logdir / RunSubDirType.RUNLOG / self.context.step / str(self.context.index)
         )
         self.status_dir = _run_dir / RunSubDirType.STATUS
-        self.log_dir = _run_dir / RunSubDirType.LOG
         ensure_dir(self.status_dir)
-        ensure_dir(self.log_dir)
 
-        self.logger, self._sw_logger = self._init_logger(self.log_dir)
-        self._stdout_changed = False
-        self._stderr_changed = False
-        self._orig_stdout = sys.stdout
-        self._orig_stderr = sys.stderr
         # TODO: split status/result files
         self._timeline_writer = _jl_writer(self.status_dir / "timeline")
 
@@ -84,47 +72,10 @@ class PipelineHandler(metaclass=ABCMeta):
         self.evaluation_store = wrapper.Evaluation(
             eval_id=self.context.version, project=self.context.project
         )
-        self._monkey_patch()
         self._update_status(RunStatus.START)
 
-    def _init_logger(
-        self, log_dir: Path, rotation: str = "500MB"
-    ) -> t.Tuple[loguru.Logger, loguru.Logger]:
-        # TODO: remove logger first?
-        # TODO: add custom log format, include daemonset pod name
-        from loguru import logger as _logger
-
-        # TODO: configure log rotation size
-        _logger.add(
-            log_dir / "{time}.log",
-            rotation=rotation,
-            backtrace=True,
-            diagnose=True,
-            serialize=True,
-        )
-        _logger.bind(
-            type=_LogType.USER,
-            task_id=self.context.index,
-            job_id=self.context.version,
-        )
-        _sw_logger = _logger.bind(type=_LogType.SW)
-        return _logger, _sw_logger
-
-    def _monkey_patch(self) -> None:
-        if not isinstance(sys.stdout, StreamWrapper) and isinstance(
-            sys.stdout, io.TextIOWrapper
-        ):
-            sys.stdout = StreamWrapper(sys.stdout, self.logger, logging.INFO)  # type: ignore
-            self._stdout_changed = True
-
-        if not isinstance(sys.stderr, StreamWrapper) and isinstance(
-            sys.stderr, io.TextIOWrapper
-        ):
-            sys.stderr = StreamWrapper(sys.stderr, self.logger, logging.WARN)  # type: ignore
-            self._stderr_changed = True
-
     def __str__(self) -> str:
-        return f"PipelineHandler status@{self.status_dir}, " f"log@{self.log_dir}"
+        return f"PipelineHandler status@{self.status_dir}"
 
     def __enter__(self) -> PipelineHandler:
         return self
@@ -135,40 +86,25 @@ class PipelineHandler(metaclass=ABCMeta):
         value: t.Optional[BaseException],
         trace: TracebackType,
     ) -> None:
-        self._sw_logger.debug(
-            f"execute {self.context.step}-{self.context.index} exit func..."
-        )
+        console.debug(f"execute {self.context.step}-{self.context.index} exit func...")
         if value:  # pragma: no cover
-            print(f"type:{type}, exception:{value}, traceback:{trace}")
+            console.warning(f"type:{type}, exception:{value}, traceback:{trace}")
 
-        if self._stdout_changed:
-            sys.stdout = self._orig_stdout
-        if self._stderr_changed:
-            sys.stderr = self._orig_stderr
         self._timeline_writer.close()
-
-    @abstractmethod
-    def ppl(self, data: t.Any, **kw: t.Any) -> t.Any:
-        # TODO: how to handle each element is not equal.
-        raise NotImplementedError
-
-    @abstractmethod
-    def cmp(self, *args: t.Any, **kw: t.Any) -> t.Any:
-        raise NotImplementedError
 
     def _record_status(func):  # type: ignore
         @wraps(func)  # type: ignore
         def _wrapper(*args: t.Any, **kwargs: t.Any) -> None:
             self: PipelineHandler = args[0]
-            self._sw_logger.info(
+            console.info(
                 f"start to run {func.__name__} function@{self.context.step}-{self.context.index} ..."  # type: ignore
             )
             self._update_status(RunStatus.RUNNING)
             try:
                 func(*args, **kwargs)  # type: ignore
-            except Exception as e:
+            except Exception:
                 self._update_status(RunStatus.FAILED)
-                self._sw_logger.exception(f"{func} abort, exception: {e}")
+                console.print_exception()
                 raise
             else:
                 self._update_status(RunStatus.SUCCESS)
@@ -176,15 +112,12 @@ class PipelineHandler(metaclass=ABCMeta):
         return _wrapper
 
     @_record_status  # type: ignore
-    def _starwhale_internal_run_cmp(self) -> None:
+    def _starwhale_internal_run_evaluate(self) -> None:
         now = now_str()
         try:
-            if self.ppl_auto_log:
-                self.cmp(self.evaluation_store.get_results(deserialize=True))
-            else:
-                self.cmp()
+            self._do_evaluate()
         except Exception as e:
-            self._sw_logger.exception(f"cmp exception: {e}")
+            console.exception(f"evaluate exception: {e}")
             self._timeline_writer.write(
                 {"time": now, "status": False, "exception": str(e)}
             )
@@ -192,48 +125,134 @@ class PipelineHandler(metaclass=ABCMeta):
         else:
             self._timeline_writer.write({"time": now, "status": True, "exception": ""})
 
-    def _is_ppl_batch(self) -> bool:
-        return self.ppl_batch_size > 1
+    def _do_predict(
+        self,
+        data: t.List[t.Dict] | t.Dict,
+        index: str | int | t.List[str | int],
+        index_with_dataset: str | t.List[str],
+        dataset_info: TabularDatasetInfo,
+        dataset_uri: Resource,
+    ) -> t.Any:
+        predict_func = getattr(self, "predict", None)
+        ppl_func = getattr(self, "ppl", None)
+
+        if predict_func and ppl_func:
+            raise ParameterError("predict and ppl cannot be defined at the same time")
+
+        func = predict_func or ppl_func
+        if func is None:
+            raise ParameterError(
+                "predict or ppl must be defined, predict function is recommended"
+            )
+        external = {
+            "index": index,
+            "index_with_dataset": index_with_dataset,
+            "dataset_info": dataset_info,
+            "context": self.context,
+            "dataset_uri": dataset_uri,
+        }
+
+        # provide the more flexible way to inject arguments for predict or ppl function
+        # case1: only accept data argument
+        # 1. def predict(self, data): ...
+        # 2. def predict(self, data, /): ...
+        # case2: accept data and external arguments
+        # 1. def predict(self, *args): ...
+        # 2. def predict(self, **kwargs): ...
+        # 3. def predict(self, *args, **kwargs): ...
+        # 4. def predict(self, data, external: t.Dict): ...
+        # 5. def predict(self, data, **kwargs): ...
+
+        kind = inspect._ParameterKind
+
+        parameters = inspect.signature(inspect.unwrap(func)).parameters.copy()
+        # Limitation: When the users use custom decorator on the class method(predict/ppl) and only data argument is defined,
+        # it is assumed that the first argument related to the class object name is self. Therefore, we remove it from the list of parameters when inspecting them.
+        parameters.pop("self", None)
+
+        if len(parameters) <= 0:
+            raise RuntimeError("predict/ppl function must have at least one argument")
+        elif len(parameters) == 1:
+            parameter: inspect.Parameter = list(parameters.values())[0]
+            if parameter.kind == kind.VAR_POSITIONAL:
+                return func(data, external)
+            elif parameter.kind == kind.VAR_KEYWORD:
+                return func(data=data, external=external)
+            elif parameter.kind in (kind.POSITIONAL_ONLY, kind.POSITIONAL_OR_KEYWORD):
+                return func(data)
+            else:
+                raise RuntimeError(
+                    f"unsupported parameter kind for predict/ppl function: {parameter.kind}"
+                )
+        else:
+            return func(data, external=external)
+
+    def _do_evaluate(self) -> t.Any:
+        evaluate_func = getattr(self, "evaluate", None)
+        cmp_func = getattr(self, "cmp", None)
+        if evaluate_func and cmp_func:
+            raise ParameterError("evaluate and cmp cannot be defined at the same time")
+
+        func = evaluate_func or cmp_func
+        if not func:
+            raise ParameterError(
+                "evaluate or cmp must be defined, evaluate function is recommended"
+            )
+
+        if self.predict_auto_log:
+            func(self._iter_predict_result(self.evaluation_store.get_results()))
+        else:
+            func()
 
     @_record_status  # type: ignore
-    def _starwhale_internal_run_ppl(self) -> None:
+    def _starwhale_internal_run_predict(self) -> None:
         if not self.dataset_uris:
             raise FieldTypeOrValueError("context.dataset_uris is empty")
         join_str = "_#@#_"
         cnt = 0
         # TODO: user custom config batch size, max_retries
         for uri_str in self.dataset_uris:
-            _uri = URI(uri_str, expected_type=URIType.DATASET)
+            _uri = Resource(uri_str, typ=ResourceType.dataset)
             ds = Dataset.dataset(_uri, readonly=True)
             ds.make_distributed_consumption(session_id=self.context.version)
             dataset_info = ds.info
             cnt = 0
-            for rows in ds.batch_iter(self.ppl_batch_size):
+            if _uri.instance.is_local:
+                # avoid confusion with underscores in project names
+                idx_prefix = f"{_uri.project.name}/{_uri.name}"
+            else:
+                r_id = _uri.info().get("id")
+                if not r_id:
+                    raise KeyError("fetch dataset id error")
+                idx_prefix = str(r_id)
+            for rows in ds.batch_iter(self.predict_batch_size):
                 _start = time.time()
                 _exception = None
                 _results: t.Any = b""
                 try:
-                    if self._is_ppl_batch():
-                        _results = self.ppl(
-                            [row.features for row in rows],
+                    if self.predict_batch_size > 1:
+                        _results = self._do_predict(
+                            data=[row.features for row in rows],
                             index=[row.index for row in rows],
                             index_with_dataset=[
-                                f"{_uri.object}{join_str}{row.index}" for row in rows
+                                f"{idx_prefix}{join_str}{row.index}" for row in rows
                             ],
                             dataset_info=dataset_info,
+                            dataset_uri=_uri,
                         )
                     else:
                         _results = [
-                            self.ppl(
-                                rows[0].features,
+                            self._do_predict(
+                                data=rows[0].features,
                                 index=rows[0].index,
-                                index_with_dataset=f"{_uri.object}{join_str}{rows[0].index}",
+                                index_with_dataset=f"{idx_prefix}{join_str}{rows[0].index}",
                                 dataset_info=dataset_info,
+                                dataset_uri=_uri,
                             )
                         ]
                 except Exception as e:
                     _exception = e
-                    self._sw_logger.exception(
+                    console.exception(
                         f"[{[r.index for r in rows]}] data handle -> failed"
                     )
                     if not self.ignore_error:
@@ -244,9 +263,9 @@ class PipelineHandler(metaclass=ABCMeta):
 
                 for (_idx, _features), _result in zip(rows, _results):
                     cnt += 1
-                    _idx_with_ds = f"{_uri.object}{join_str}{_idx}"
+                    _idx_with_ds = f"{idx_prefix}{join_str}{_idx}"
 
-                    self._sw_logger.debug(
+                    console.trace(
                         f"[{_idx_with_ds}] use {time.time() - _start:.3f}s, session-id:{self.context.version} @{self.context.step}-{self.context.index}"
                     )
 
@@ -260,25 +279,17 @@ class PipelineHandler(metaclass=ABCMeta):
                         }
                     )
 
-                    if self.ppl_auto_log:
-                        if not self.ignore_dataset_data:
-                            for artifact in TabularDatasetRow.artifacts_of(_features):
-                                if artifact.link:
-                                    artifact.clear_cache()
-                        self.evaluation_store.log_result(
-                            data_id=_idx_with_ds,
-                            index=_idx,
-                            result=_result,
-                            ds_data={}
-                            if self.ignore_dataset_data
-                            else _features.copy(),  # drop DataRow._Features type, keep dict type for features
-                            serialize=True,
-                        )
+                    self._log_predict_result(
+                        features=_features,
+                        idx_with_ds=_idx_with_ds,
+                        output=_result,
+                        idx=_idx,
+                    )
 
-        if self.flush_result and self.ppl_auto_log:
+        if self.flush_result and self.predict_auto_log:
             self.evaluation_store.flush_result()
 
-        self._sw_logger.info(
+        console.info(
             f"{self.context.step}-{self.context.index} handled {cnt} data items for dataset {self.dataset_uris}"
         )
 
@@ -293,6 +304,61 @@ class PipelineHandler(metaclass=ABCMeta):
 
     def serve(self, addr: str, port: int) -> None:
         self.svc.serve(addr, port)
+
+    def _iter_predict_result(
+        self, raw_results_iter: t.Iterator[t.Dict]
+    ) -> t.Iterator[t.Dict]:
+        for data in raw_results_iter:
+            mode = data.get("_mode", PredictLogMode.PICKLE.value)
+            mode = PredictLogMode(mode)
+
+            if "output" in data and mode == PredictLogMode.PICKLE:
+                data["output"] = dill.loads(data["output"])
+
+            input_features = {}
+            for k in list(data.keys()):
+                if k.startswith(self._INPUT_PREFIX):
+                    _, name = k.split(self._INPUT_PREFIX, 1)
+                    input_features[name] = data.pop(k)
+
+            data["input"] = input_features
+            yield data
+
+    def _log_predict_result(
+        self, features: t.Dict, idx_with_ds: str, output: t.Any, idx: str | int
+    ) -> None:
+        if not self.predict_auto_log:
+            return
+
+        if self.predict_log_dataset_features is None:
+            _log_features = features
+        else:
+            _log_features = {
+                k: v
+                for k, v in features.items()
+                if k in self.predict_log_dataset_features
+            }
+
+        for artifact in TabularDatasetRow.artifacts_of(_log_features):
+            if artifact.link:
+                artifact.clear_cache()
+
+        input_features = {
+            f"{self._INPUT_PREFIX}{k}": JsonDict.from_data(v)
+            for k, v in _log_features.items()
+        }
+        if self.predict_log_mode == PredictLogMode.PICKLE:
+            output = dill.dumps(output)
+
+        # for plain mode: if the output is dict type, we(datastore) will log each key-value pair as a column
+        record = {
+            "id": idx_with_ds,
+            "_mode": self.predict_log_mode.value,
+            "_index": idx,
+            "output": output,
+            **input_features,
+        }
+        self.evaluation_store.log_result(record)
 
 
 # TODO: add flush, get_summary functions?
@@ -445,10 +511,13 @@ def predict(*args: t.Any, **kw: t.Any) -> t.Any:
         resources: [Dict, optional] Resources for the predict task, such as memory, gpu etc. Current only supports
             the cloud instance.
         concurrency: [int, optional] The concurrency of the predict tasks. Default is 1.
-        replicas: [int, optional] The number of the predict tasks. Default is 2.
+        replicas: [int, optional] The number of the predict tasks. Default is 1.
         batch_size: [int, optional] Number of samples per batch. Default is 1.
         fail_on_error: [bool, optional] Fast fail on the exceptions in the predict function. Default is True.
         auto_log: [bool, optional] Auto log the return values of the predict function and the according dataset rows. Default is True.
+        log_mode: [str, optional] When auto_log=True, the log_mode can be specified to control the log behavior. Options are `pickle` and `plain`. Default is `pickle`.
+        log_dataset_features: [List[str], optional] When auto_log=True, the log_dataset_features can be specified to control the log dataset features behavior.
+            Default is None, all dataset features will be logged. If the list is empty, no dataset features will be logged.
         needs: [List[Callable], optional] The list of the functions that need to be executed before the predict function.
 
     Examples:
@@ -464,7 +533,6 @@ def predict(*args: t.Any, **kw: t.Any) -> t.Any:
         dataset="mnist/version/latest",
         batch_size=32,
         replicas=4,
-        auto_log=True,
     )
     def predict_batch_images(batch_data)
         ...
@@ -494,10 +562,12 @@ def _register_predict(
     resources: t.Optional[t.Dict[str, t.Any]] = None,
     needs: t.Optional[t.List[t.Callable]] = None,
     concurrency: int = 1,
-    replicas: int = 2,
+    replicas: int = 1,
     batch_size: int = 1,
     fail_on_error: bool = True,
     auto_log: bool = True,
+    log_mode: str = PredictLogMode.PICKLE.value,
+    log_dataset_features: t.Optional[t.List[str]] = None,
 ) -> None:
     from .job import Handler
 
@@ -508,10 +578,11 @@ def _register_predict(
         needs=needs,
         replicas=replicas,
         extra_kwargs=dict(
-            ppl_batch_size=batch_size,
+            predict_batch_size=batch_size,
             ignore_error=not fail_on_error,
-            ppl_auto_log=auto_log,
-            ignore_dataset_data=not auto_log,
+            predict_auto_log=auto_log,
+            predict_log_mode=log_mode,
+            predict_log_dataset_features=log_dataset_features,
             dataset_uris=datasets,
         ),
     )(func)
@@ -576,6 +647,6 @@ def _register_evaluate(
         replicas=1,
         needs=needs,
         extra_kwargs=dict(
-            ppl_auto_log=use_predict_auto_log,
+            predict_auto_log=use_predict_auto_log,
         ),
     )(func)

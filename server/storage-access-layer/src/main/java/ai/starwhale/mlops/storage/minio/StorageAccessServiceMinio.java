@@ -65,13 +65,21 @@ public class StorageAccessServiceMinio implements StorageAccessService {
 
     @Override
     public StorageObjectInfo head(String path) throws IOException {
+        return this.head(path, false);
+    }
+
+    @Override
+    public StorageObjectInfo head(String path, boolean md5sum) throws IOException {
         try {
             StatObjectResponse resp = this.minioClient.statObject(
                     StatObjectArgs.builder().bucket(bucket).object(path).build());
-            return new StorageObjectInfo(true, resp.size(), MetaHelper.mapToString(resp.userMetadata()));
+            return new StorageObjectInfo(true,
+                    resp.size(),
+                    md5sum ? resp.etag().replace("\"", "") : null,
+                    MetaHelper.mapToString(resp.userMetadata()));
         } catch (ErrorResponseException e) {
             if ("NoSuchKey".equals(e.errorResponse().code())) {
-                return new StorageObjectInfo(false, null, null);
+                return new StorageObjectInfo(false, null, null, null);
             } else {
                 log.error("head object fails", e);
                 throw new IOException(e);
@@ -180,17 +188,20 @@ public class StorageAccessServiceMinio implements StorageAccessService {
 
     @Override
     public String signedUrl(String path, Long expTimeMillis) throws IOException {
+        return this.signUrl(path, expTimeMillis, Method.GET);
+    }
+
+    @Override
+    public String signedPutUrl(String path, Long expTimeMillis) throws IOException {
+        return this.signUrl(path, expTimeMillis, Method.PUT);
+    }
+
+    private String signUrl(String path, Long expTimeMillis, Method method) throws IOException {
         GetPresignedObjectUrlArgs request = GetPresignedObjectUrlArgs.builder().expiry(expTimeMillis.intValue(),
-                TimeUnit.MILLISECONDS).bucket(this.bucket).object(path).method(Method.GET).build();
+                TimeUnit.MILLISECONDS).bucket(this.bucket).object(path).method(method).build();
         try {
             return minioClient.getPresignedObjectUrl(request);
-        } catch (MinioException e) {
-            log.error("sin url for object {} fails", path, e);
-            throw new IOException(e);
-        } catch (InvalidKeyException e) {
-            log.error("sin url for object {} fails", path, e);
-            throw new IOException(e);
-        } catch (NoSuchAlgorithmException e) {
+        } catch (MinioException | NoSuchAlgorithmException | InvalidKeyException e) {
             log.error("sin url for object {} fails", path, e);
             throw new IOException(e);
         }

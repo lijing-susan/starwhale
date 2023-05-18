@@ -7,9 +7,10 @@ from pathlib import Path
 
 from starwhale.utils import gen_uniq_version
 from starwhale.consts import ENV_BUILD_BUNDLE_FIXED_VERSION_FOR_TEST
-from starwhale.base.uri import URI
-from starwhale.base.type import URIType
+from starwhale.base.type import DatasetChangeMode
 from starwhale.core.model.view import ModelTermView
+from starwhale.base.uri.project import Project
+from starwhale.base.uri.resource import Resource, ResourceType
 from starwhale.core.runtime.model import RuntimeConfig
 
 from . import CLI
@@ -64,7 +65,7 @@ class Model(BaseArtifact):
         self,
         model_uri: str,
         dataset_uris: t.List[str],
-        runtime_uri: t.Optional[URI],
+        runtime_uri: t.Optional[Resource],
         run_handler: str,
     ) -> str:
         version = gen_uniq_version()
@@ -100,7 +101,7 @@ class Model(BaseArtifact):
         run_handler: str,
     ) -> t.Tuple[bool, str]:
         return ModelTermView.run_in_server(
-            project_uri=URI(project, expected_type=URIType.PROJECT),
+            project_uri=Project(project),
             model_uri=model_uri,
             dataset_uris=dataset_uris,
             runtime_uri=runtime_uri,
@@ -109,12 +110,14 @@ class Model(BaseArtifact):
         )
 
     @classmethod
-    def build(cls, workdir: str, name: str) -> URI:
+    def build(cls, workdir: str, name: str, runtime: str = "") -> Resource:
         version = gen_uniq_version()
         cmd = [CLI, "model", "build", workdir, "--name", name]
+        if runtime:
+            cmd.extend(["--runtime", runtime])
         _ret_code, _res = invoke(cmd, external_env={_ENV_FIXED_VERSION: version})
         assert _ret_code == 0, _res
-        return URI(f"{name}/version/{version}", expected_type=URIType.MODEL)
+        return Resource(f"{name}/version/{version}", typ=ResourceType.model)
 
     def copy(self, src_uri: str, target_project: str, force: bool) -> None:
         _args = [CLI, self.name, "copy", src_uri, target_project]
@@ -133,7 +136,7 @@ class Dataset(BaseArtifact):
         workdir: str,
         name: str,
         dataset_yaml: str = "dataset.yaml",
-    ) -> t.Any:
+    ) -> Resource:
         if not name:
             name = os.path.basename(workdir)
 
@@ -150,10 +153,22 @@ class Dataset(BaseArtifact):
         version = gen_uniq_version()
         ret_code, res = invoke(cmd, external_env={_ENV_FIXED_VERSION: version})
         assert ret_code == 0, res
-        return URI(f"{name}/version/{version}", expected_type=URIType.DATASET)
+        return Resource(f"{name}/version/{version}", typ=ResourceType.dataset)
 
-    def copy(self, src_uri: str, target_project: str) -> None:
+    def copy(
+        self,
+        src_uri: str,
+        target_project: str,
+        force: bool = False,
+        mode: DatasetChangeMode = DatasetChangeMode.PATCH,
+    ) -> None:
         _args = [CLI, self.name, "copy", src_uri, target_project]
+        if force:
+            _args.append("--force")
+        if mode == DatasetChangeMode.PATCH:
+            _args.append("--patch")
+        else:
+            _args.append("--overwrite")
         _ret_code, _res = invoke(_args)
         assert _ret_code == 0, _res
 
@@ -163,7 +178,7 @@ class Runtime(BaseArtifact):
         super().__init__("runtime")
 
     @classmethod
-    def build(cls, workdir: str, runtime_yaml: str) -> URI:
+    def build(cls, workdir: str, runtime_yaml: str) -> Resource:
         version = gen_uniq_version()
         yaml_path = os.path.join(workdir, runtime_yaml)
         config = RuntimeConfig.create_by_yaml(Path(yaml_path))
@@ -177,11 +192,19 @@ class Runtime(BaseArtifact):
             config.name,
             "--no-cache",
         ]
-        ret_code, res = invoke(cmd, external_env={_ENV_FIXED_VERSION: version})
+        ret_code, res = invoke(
+            cmd, external_env={_ENV_FIXED_VERSION: version}, log=True
+        )
         assert ret_code == 0, res
-        return URI(f"{config.name}/version/{version}", expected_type=URIType.RUNTIME)
+        return Resource(f"{config.name}/version/{version}", typ=ResourceType.runtime)
 
-    def copy(self, src_uri: str, target_project: str, force: bool) -> None:
+    def copy(
+        self,
+        src_uri: str,
+        target_project: str,
+        force: bool,
+        mode: DatasetChangeMode = DatasetChangeMode.PATCH,
+    ) -> None:
         _args = [CLI, self.name, "copy", src_uri, target_project]
         if force:
             _args.append("--force")

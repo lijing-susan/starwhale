@@ -14,7 +14,6 @@ from collections import defaultdict
 
 import yaml
 from fs import open_fs
-from loguru import logger
 from fs.walk import Walker
 
 from starwhale.utils import (
@@ -51,16 +50,17 @@ from starwhale.consts import (
     DEFAULT_FILE_SIZE_THRESHOLD_TO_TAR_IN_MODEL,
 )
 from starwhale.base.tag import StandaloneTag
-from starwhale.base.uri import URI
 from starwhale.utils.fs import (
+    copy_dir,
     move_dir,
     copy_file,
+    empty_dir,
     file_stat,
     ensure_dir,
     ensure_file,
     blake2b_file,
 )
-from starwhale.base.type import URIType, BundleType, InstanceType
+from starwhale.base.type import BundleType, InstanceType, RunSubDirType
 from starwhale.base.cloud import CloudRequestMixed, CloudBundleModelMixin
 from starwhale.base.mixin import ASDictMixin
 from starwhale.utils.http import ignore_error
@@ -73,10 +73,12 @@ from starwhale.api._impl.job import generate_jobs_yaml
 from starwhale.base.scheduler import Step, Scheduler
 from starwhale.core.job.store import JobStorage
 from starwhale.utils.progress import run_with_progress_bar
-from starwhale.base.blob.store import LocalFileStore
+from starwhale.base.blob.store import LocalFileStore, BuiltinPyExcludes
 from starwhale.core.model.copy import ModelCopy
+from starwhale.base.uri.project import Project
 from starwhale.core.model.store import ModelStorage
 from starwhale.api._impl.service import Hijack
+from starwhale.base.uri.resource import Resource, ResourceType
 from starwhale.core.runtime.model import StandaloneRuntime
 
 
@@ -108,12 +110,11 @@ class ModelRunConfig(ASDictMixin):
         return f"Model Run Config: {self.modules}"
 
     def __repr__(self) -> str:
-        return f"Model Run Config: handlers -> {self.modules}, envs -> {self.envs}"
+        return f"Model Run Config: modules -> {self.modules}, envs -> {self.envs}"
 
     def do_validate(self) -> None:
-        # TODO: validate handler format
         if not self.modules:
-            raise ValueError("model run config must have at least one handler")
+            raise ValueError("not found any modules in model run config")
 
 
 class ModelConfig(ASDictMixin):
@@ -154,15 +155,15 @@ class Model(BaseBundle, metaclass=ABCMeta):
         return f"Starwhale Model: {self.uri}"
 
     @classmethod
-    def get_model(cls, uri: URI) -> Model:
+    def get_model(cls, uri: Resource) -> Model:
         _cls = cls._get_cls(uri)
         return _cls(uri)
 
     @classmethod
-    def _get_cls(cls, uri: URI) -> t.Union[t.Type[StandaloneModel], t.Type[CloudModel]]:  # type: ignore
-        if uri.instance_type == InstanceType.STANDALONE:
+    def _get_cls(cls, uri: Resource) -> t.Union[t.Type[StandaloneModel], t.Type[CloudModel]]:  # type: ignore
+        if uri.instance.is_local:
             return StandaloneModel
-        elif uri.instance_type == InstanceType.CLOUD:
+        elif uri.instance.is_cloud:
             return CloudModel
         else:
             raise NoSupportError(f"model uri:{uri}")
@@ -170,7 +171,7 @@ class Model(BaseBundle, metaclass=ABCMeta):
     @classmethod
     def copy(
         cls,
-        src_uri: str,
+        src_uri: Resource,
         dest_uri: str,
         force: bool = False,
         dest_local_project_uri: str = "",
@@ -178,13 +179,13 @@ class Model(BaseBundle, metaclass=ABCMeta):
         bc = ModelCopy(
             src_uri,
             dest_uri,
-            URIType.MODEL,
+            ResourceType.model,
             force,
             dest_local_project_uri=dest_local_project_uri,
         )
         bc.do()
 
-    def diff(self, compare_uri: URI) -> t.Dict[str, t.Any]:
+    def diff(self, compare_uri: Resource) -> t.Dict[str, t.Any]:
         raise NotImplementedError
 
 
@@ -204,16 +205,16 @@ def resource_to_file_node(
 
 
 class StandaloneModel(Model, LocalStorageBundleMixin):
-    def __init__(self, uri: URI) -> None:
+    def __init__(self, uri: Resource) -> None:
         super().__init__(uri)
         self.typ = InstanceType.STANDALONE
-        self.store = ModelStorage(uri)
+        self.store: ModelStorage = ModelStorage(uri)
         self.tag = StandaloneTag(uri)
         self._manifest: t.Dict[str, t.Any] = {}  # TODO: use manifest class
         self.models: t.List[t.Dict[str, t.Any]] = []
         self.sources: t.List[t.Dict[str, t.Any]] = []
         self.yaml_name = DefaultYAMLName.MODEL
-        self._version = uri.object.version
+        self._version = uri.version
         self._object_store = LocalFileStore()
 
     def list_tags(self) -> t.List[str]:
@@ -306,6 +307,13 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
         svc.hijack = hijack
         return svc
 
+    def extract(self, force: bool = False, target: t.Union[str, Path] = "") -> Path:
+        target = Path(target)
+        console.print(f":package: Extracting model({self.uri}) ...")
+        copy_dir(src_dir=self.store.src_dir, dest_dir=target, force=force)
+        console.print(f":clap: Model extracted to {target}")
+        return target
+
     @classmethod
     def run(
         cls,
@@ -317,17 +325,32 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
         dataset_uris: t.Optional[t.List[str]] = None,
         scheduler_run_args: t.Optional[t.Dict[str, t.Any]] = None,
         external_info: t.Optional[t.Dict[str, t.Any]] = None,
+        forbid_snapshot: bool = False,
+        cleanup_snapshot: bool = True,
+        force_generate_jobs_yaml: bool = False,
     ) -> None:
         external_info = external_info or {}
         dataset_uris = dataset_uris or []
         scheduler_run_args = scheduler_run_args or {}
         version = version or gen_uniq_version()
 
-        job_yaml_path = model_src_dir / SW_AUTO_DIRNAME / DEFAULT_JOBS_FILE_NAME
-        if not job_yaml_path.exists():
+        job_dir = JobStorage.local_run_dir(project, version)
+        if forbid_snapshot:
+            snapshot_dir = model_src_dir
+        else:
+            snapshot_dir = job_dir / RunSubDirType.SNAPSHOT
+            # TODO: tune performance for copy files, such as overlay
+            copy_dir(model_src_dir, snapshot_dir)
+
+        # change current dir into snapshot dir, this will help user code to find files easily.
+        console.print(f":airplane: change current dir to {snapshot_dir}")
+        os.chdir(snapshot_dir)
+
+        job_yaml_path = snapshot_dir / SW_AUTO_DIRNAME / DEFAULT_JOBS_FILE_NAME
+        if not job_yaml_path.exists() or force_generate_jobs_yaml:
             generate_jobs_yaml(
                 search_modules=model_config.run.modules,
-                package_dir=model_src_dir,
+                package_dir=snapshot_dir,
                 yaml_path=job_yaml_path,
             )
 
@@ -337,7 +360,7 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
         scheduler = Scheduler(
             project=project,
             version=version,
-            workdir=model_src_dir,
+            workdir=snapshot_dir,
             dataset_uris=dataset_uris,
             steps=Step.get_steps_from_yaml(run_handler, job_yaml_path),
         )
@@ -354,16 +377,9 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
                         exceptions.append(_tr.exception)
             if exceptions:
                 raise Exception(*exceptions)
-
-            logger.debug(
-                f"-->[Finished] run[{version[:SHORT_VERSION_CNT]}] execute finished, results info:{results}"
-            )
-        except Exception as e:
+        except Exception:
             scheduler_status = RunStatus.FAILED
-            error_message = str(e)
-            logger.error(
-                f"-->[Failed] run[{version[:SHORT_VERSION_CNT]}] execute failed, error info:{e}"
-            )
+            console.print_exception()
             raise
         finally:
             _manifest: t.Dict[str, t.Any] = {
@@ -371,7 +387,7 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
                 "scheduler_run_args": scheduler_run_args,
                 "version": version,
                 "project": project,
-                "model_src_dir": str(model_src_dir),
+                "model_src_dir": str(snapshot_dir),
                 "datasets": dataset_uris,
                 "status": scheduler_status,
                 "error_message": error_message,
@@ -379,9 +395,8 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
                 **external_info,
             }
 
-            _dir = JobStorage.local_run_dir(project, version)
             ensure_file(
-                _dir / DEFAULT_MANIFEST_NAME,
+                job_dir / DEFAULT_MANIFEST_NAME,
                 yaml.safe_dump(_manifest, default_flow_style=False),
                 parents=True,
             )
@@ -390,7 +405,10 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
                 f":{100 if scheduler_status == RunStatus.SUCCESS else 'broken_heart'}: finish run, {scheduler_status}!"
             )
 
-    def diff(self, compare_uri: URI) -> t.Dict[str, t.Any]:
+            if not forbid_snapshot and cleanup_snapshot:
+                empty_dir(snapshot_dir, ignore_errors=True)
+
+    def diff(self, compare_uri: Resource) -> t.Dict[str, t.Any]:
         """
         - added: a node that exists in compare but not in base
         - deleted: a node that not exists in compare but in base
@@ -400,11 +418,11 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
         :return: diff info
         """
         # TODO use remote get model info for cloud
-        if compare_uri.instance_type != InstanceType.STANDALONE:
+        if not compare_uri.instance.is_local:
             raise NoSupportError(
                 f"only support standalone uri, but compare_uri({compare_uri}) is for cloud instance"
             )
-        if self.uri.object.name != compare_uri.object.name:
+        if self.uri.name != compare_uri.name:
             raise NoSupportError(
                 f"only support two versions diff in one model, base model:{self.uri}, compare model:{compare_uri}"
             )
@@ -449,9 +467,9 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
         ret["basic"] = copy.deepcopy(self.store.digest)
         ret["basic"].update(
             {
-                "name": self.uri.object.name,
-                "version": self.uri.object.version,
-                "project": self.uri.project,
+                "name": self.uri.name,
+                "version": self.uri.version,
+                "project": self.uri.project.name,
                 "path": str(self.store.bundle_path),
                 "tags": StandaloneTag(self.uri).list(),
                 "handlers": sorted(job_yaml.keys()),
@@ -506,9 +524,7 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
 
     def recover(self, force: bool = False) -> t.Tuple[bool, str]:
         # TODO: support short version to recover, today only support full-version
-        dest_path = (
-            self.store.bundle_dir / f"{self.uri.object.version}{BundleType.MODEL}"
-        )
+        dest_path = self.store.bundle_dir / f"{self.uri.version}{BundleType.MODEL}"
         _ok, _reason = move_dir(self.store.recover_loc, dest_path, force)
         _ok2, _reason2 = True, ""
         if self.store.recover_snapshot_workdir.exists():
@@ -520,7 +536,7 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
     @classmethod
     def list(
         cls,
-        project_uri: URI,
+        project_uri: Project,
         page: int = DEFAULT_PAGE_IDX,
         size: int = DEFAULT_PAGE_SIZE,
         filters: t.Optional[t.Union[t.Dict[str, t.Any], t.List[str]]] = None,
@@ -530,7 +546,7 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
         for _bf in ModelStorage.iter_all_bundles(
             project_uri,
             bundle_type=BundleType.MODEL,
-            uri_type=URIType.MODEL,
+            uri_type=ResourceType.model,
         ):
             _mpath = _bf.path / DEFAULT_MANIFEST_NAME
             if not _mpath.exists() or not cls.do_bundle_filter(_bf, filters):
@@ -557,7 +573,6 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
 
     def buildImpl(self, workdir: Path, **kw: t.Any) -> None:  # type: ignore[override]
         model_config: ModelConfig = kw["model_config"]
-        logger.debug(f"build workdir:{workdir}")
 
         operations = [
             (self._gen_version, 5, "gen version"),
@@ -566,7 +581,11 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
                 self._copy_src,
                 15,
                 "copy src",
-                dict(workdir=workdir, model_config=model_config),
+                dict(
+                    workdir=workdir,
+                    model_config=model_config,
+                    add_all=kw.get("add_all", False),
+                ),
             ),
         ]
         packaging_runtime_uri = kw.get("packaging_runtime_uri")
@@ -620,23 +639,19 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
 
         run_with_progress_bar("model bundle building...", operations)
 
-    def _package_runtime(self, runtime_uri: URI | str) -> None:
+    def _package_runtime(self, runtime_uri: Resource | str) -> None:
         if isinstance(runtime_uri, str):
-            uri = URI.guess(runtime_uri, fallback_type=URIType.RUNTIME)
+            uri = Resource(runtime_uri, typ=ResourceType.runtime)
         else:
             uri = runtime_uri
 
         # TODO: support runtime uri in the cloud instance
-        if uri.instance_type != InstanceType.STANDALONE:
+        if not uri.instance.is_local:
             raise NoSupportError(
-                f"runtime type {uri.instance_type} not support in package runtime"
+                f"runtime type {uri.instance.type} not support in package runtime"
             )
 
-        info: t.Dict[str, t.Any] = {
-            "name": uri.object.name,
-        }
-
-        if uri.object.typ == URIType.RUNTIME:
+        if uri.typ == ResourceType.runtime:
             runtime = StandaloneRuntime(uri)
             bundle_path = runtime.store.bundle_path
             info = {
@@ -644,7 +659,7 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
                 "manifest": runtime.store.manifest,
                 "hash": blake2b_file(bundle_path),
             }
-        elif uri.object.typ == URIType.MODEL:
+        elif uri.typ == ResourceType.model:
             model = StandaloneModel(uri)
             bundle_path = model.store.packaged_runtime_bundle_path
             packaged_runtime = model.store.digest.get("packaged_runtime")
@@ -653,9 +668,7 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
 
             info = packaged_runtime
         else:
-            raise NoSupportError(
-                f"uri type {uri.object.typ} not support to package runtime"
-            )
+            raise NoSupportError(f"uri type {uri.typ} not support to package runtime")
 
         dest = self.store.packaged_runtime_bundle_path
         console.print(f":optical_disk: package runtime({uri}) to {dest}")
@@ -693,7 +706,7 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
             total_size += size
 
         self._manifest["size"] = total_size
-        console.print(f":basket: resource files size: {pretty_bytes(total_size)}")
+        console.info(f":basket: resource files size: {pretty_bytes(total_size)}")
 
         ensure_file(
             self.store.resource_files_path,
@@ -738,8 +751,6 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
         return _config
 
     def _prepare_snapshot(self) -> None:
-        logger.info("[step:prepare-snapshot]prepare model snapshot dirs...")
-
         ensure_dir(self.store.snapshot_workdir)
         ensure_dir(self.store.src_dir)
 
@@ -750,18 +761,40 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
             f":file_folder: workdir: [underline]{self.store.snapshot_workdir}[/]"
         )
 
-    def _copy_src(self, workdir: Path, model_config: ModelConfig) -> None:
+    def _copy_src(
+        self, workdir: Path, model_config: ModelConfig, add_all: bool
+    ) -> None:
+        """
+        Copy source code files to snapshot workdir
+        Args:
+            workdir: source code dir
+            model_config: model config
+            add_all: copy all files, include python cache files(defined in BuiltinPyExcludes) and venv or conda files
+        Returns: None
+        """
         console.print(
-            f":thumbs_up: try to copy source code files: {workdir} -> {self.store.src_dir}"
+            f":peacock: copy source code files: {workdir} -> {self.store.src_dir}"
         )
 
-        excludes = None
+        excludes = []
         ignore = workdir / SW_IGNORE_FILE_NAME
         if ignore.exists():
             with open(ignore, "r") as f:
                 excludes = [line.strip() for line in f.readlines()]
-        self._object_store.copy_dir(
-            str(workdir.resolve()), str(self.store.src_dir.resolve()), excludes=excludes
+        if not add_all:
+            excludes += BuiltinPyExcludes
+
+        console.debug(
+            f"copy dir: {workdir} -> {self.store.src_dir}, excludes: {excludes}"
+        )
+        total_size = self._object_store.copy_dir(
+            src_dir=workdir.resolve(),
+            dst_dir=self.store.src_dir.resolve(),
+            excludes=excludes,
+            ignore_venv_or_conda=not add_all,
+        )
+        console.print(
+            f":file_folder: source code files size: {pretty_bytes(total_size)}"
         )
 
         model_yaml = yaml.safe_dump(model_config.asdict(), default_flow_style=False)
@@ -773,8 +806,6 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
         ensure_file(
             self.store.src_dir / DefaultYAMLName.MODEL, model_yaml, parents=True
         )
-
-        logger.info("[step:copy]finish copy files")
 
     @classmethod
     def _load_config_envs(cls, _config: ModelConfig) -> None:
@@ -801,7 +832,7 @@ class StandaloneModel(Model, LocalStorageBundleMixin):
 
 
 class CloudModel(CloudBundleModelMixin, Model):
-    def __init__(self, uri: URI) -> None:
+    def __init__(self, uri: Resource) -> None:
         super().__init__(uri)
         self.typ = InstanceType.CLOUD
 
@@ -809,7 +840,7 @@ class CloudModel(CloudBundleModelMixin, Model):
     @ignore_error(({}, {}))
     def list(
         cls,
-        project_uri: URI,
+        project_uri: Project,
         page: int = DEFAULT_PAGE_IDX,
         size: int = DEFAULT_PAGE_SIZE,
         filter_dict: t.Optional[t.Dict[str, t.Any]] = None,
@@ -817,19 +848,19 @@ class CloudModel(CloudBundleModelMixin, Model):
         filter_dict = filter_dict or {}
         crm = CloudRequestMixed()
         return crm._fetch_bundle_all_list(
-            project_uri, URIType.MODEL, page, size, filter_dict
+            project_uri, ResourceType.model, page, size, filter_dict
         )
 
     def build(self, *args: t.Any, **kwargs: t.Any) -> None:
         raise NoSupportError("no support build model in the cloud instance")
 
-    def diff(self, compare_uri: URI) -> t.Dict[str, t.Any]:
+    def diff(self, compare_uri: Resource) -> t.Dict[str, t.Any]:
         raise NoSupportError("no support model diff in the cloud instance")
 
     @classmethod
     def run(
         cls,
-        project_uri: URI,
+        project_uri: Project,
         model_uri: str,
         dataset_uris: t.List[str],
         runtime_uri: str,
@@ -837,16 +868,41 @@ class CloudModel(CloudBundleModelMixin, Model):
         resource_pool: str = "default",
     ) -> t.Tuple[bool, str]:
         crm = CloudRequestMixed()
-
+        _model_uri = Resource(
+            model_uri, ResourceType.model, project=project_uri, refine=True
+        )
+        _dataset_uris = [
+            Resource(i, ResourceType.dataset, project=project_uri, refine=True)
+            for i in dataset_uris
+        ]
+        _runtime_uri = (
+            Resource(
+                runtime_uri,
+                ResourceType.runtime,
+                project=project_uri,
+                refine=True,
+            )
+            if runtime_uri
+            else None
+        )
         r = crm.do_http_request(
-            f"/project/{project_uri.project}/job",
+            f"/project/{project_uri.name}/job",
             method=HTTPMethod.POST,
-            instance_uri=project_uri,
+            instance=project_uri.instance,
             data=json.dumps(
                 {
-                    "modelVersionUrl": model_uri,
-                    "datasetVersionUrls": ",".join([str(i) for i in dataset_uris]),
-                    "runtimeVersionUrl": runtime_uri,
+                    "modelVersionUrl": _model_uri.info().get("versionId")
+                    or _model_uri.version,
+                    "datasetVersionUrls": ",".join(
+                        [
+                            str(i.info().get("versionId") or i.version)
+                            for i in _dataset_uris
+                        ]
+                    ),
+                    "runtimeVersionUrl": _runtime_uri.info().get("versionId")
+                    or _runtime_uri.version
+                    if _runtime_uri
+                    else "",
                     "resourcePool": resource_pool,
                     "handler": run_handler,
                 }

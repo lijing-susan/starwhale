@@ -3,13 +3,14 @@ import typing as t
 from pathlib import Path
 
 import click
+from click_option_group import optgroup, MutuallyExclusiveOptionGroup
 
 from starwhale.consts import DefaultYAMLName, DEFAULT_PAGE_IDX, DEFAULT_PAGE_SIZE
-from starwhale.base.uri import URI
-from starwhale.base.type import URIType
+from starwhale.base.type import DatasetChangeMode
 from starwhale.utils.cli import AliasedGroup
 from starwhale.utils.load import import_object
 from starwhale.utils.error import NotFoundError
+from starwhale.base.uri.resource import Resource, ResourceType
 from starwhale.core.dataset.type import DatasetAttr, DatasetConfig
 
 from .view import get_term_view, DatasetTermView
@@ -106,7 +107,7 @@ def _build(
 def _diff(
     view: t.Type[DatasetTermView], base_uri: str, compare_uri: str, show_details: bool
 ) -> None:
-    view(base_uri).diff(URI(compare_uri, expected_type=URIType.DATASET), show_details)
+    view(base_uri).diff(Resource(compare_uri, typ=ResourceType.dataset), show_details)
 
 
 @dataset_cmd.command("list", aliases=["ls"])
@@ -158,12 +159,24 @@ def _list(
     view.list(project, fullname, show_removed, page, size, filters)
 
 
-@dataset_cmd.command("info", help="Show dataset details")
+@dataset_cmd.command("info")
 @click.argument("dataset")
-@click.option("--fullname", is_flag=True, help="Show version fullname")
 @click.pass_obj
-def _info(view: t.Type[DatasetTermView], dataset: str, fullname: bool) -> None:
-    view(dataset).info(fullname)
+def _info(view: t.Type[DatasetTermView], dataset: str) -> None:
+    """Show dataset details.
+
+    DATASET: argument use the `Dataset URI` format. Version is optional for the Dataset URI.
+    If not specified, will show the latest version.
+
+    Example:
+
+        \b
+        swcli dataset info mnist # show the latest version of mnist dataset
+        swcli dataset info mnist/version/v0 # show the specified version of mnist dataset
+        swcli -o json dataset info mnist # show the latest version of mnist dataset in json format
+    """
+    uri = Resource(dataset, typ=ResourceType.dataset)
+    view(uri).info()
 
 
 @dataset_cmd.command("remove", aliases=["rm"])
@@ -214,14 +227,36 @@ def _history(
 @click.argument("dataset")
 @click.pass_obj
 def _summary(view: t.Type[DatasetTermView], dataset: str) -> None:
-    view(dataset).summary()
+    uri = Resource(dataset, typ=ResourceType.dataset)
+    view(uri).summary()
 
 
 @dataset_cmd.command("copy", aliases=["cp"])
 @click.argument("src")
 @click.argument("dest")
+@click.option("-f", "--force", is_flag=True, help="Force copy dataset")
 @click.option("-dlp", "--dest-local-project", help="dest local project uri")
-def _copy(src: str, dest: str, dest_local_project: str) -> None:
+@optgroup.group(
+    "\n ** Copy Mode Selectors",
+    cls=MutuallyExclusiveOptionGroup,
+    help="The selector of copy mode. If no set, the default is `patch` mode.",
+)
+@optgroup.option(  # type: ignore
+    "-p",
+    "--patch",
+    "mode",
+    flag_value=DatasetChangeMode.PATCH.value,
+    default=True,
+    help="Patch mode, only update the changed rows and columns for the remote dataset.",
+)
+@optgroup.option(  # type: ignore
+    "-o",
+    "--overwrite",
+    "mode",
+    flag_value=DatasetChangeMode.OVERWRITE.value,
+    help="Overwrite mode, update records and delete extraneous rows from the remote dataset.",
+)
+def _copy(src: str, dest: str, dest_local_project: str, mode: str, force: bool) -> None:
     """
     Copy Dataset between Standalone Instance and Cloud Instance
 
@@ -237,7 +272,7 @@ def _copy(src: str, dest: str, dest_local_project: str) -> None:
 
         \b
         - copy cloud instance(pre-k8s) mnist project's mnist-cloud dataset to local default project(self) with the cloud instance dataset name 'mnist-cloud'
-            swcli dataset cp cloud://pre-k8s/project/dataset/mnist/mnist-cloud/version/ge3tkylgha2tenrtmftdgyjzni3dayq .
+            swcli dataset cp --patch cloud://pre-k8s/project/dataset/mnist/mnist-cloud/version/ge3tkylgha2tenrtmftdgyjzni3dayq .
 
         \b
         - copy cloud instance(pre-k8s) mnist project's mnist-cloud dataset to local project(myproject) with the cloud instance dataset name 'mnist-cloud'
@@ -245,7 +280,7 @@ def _copy(src: str, dest: str, dest_local_project: str) -> None:
 
         \b
         - copy cloud instance(pre-k8s) mnist project's mnist-cloud dataset to local default project(self) with a dataset name 'mnist-local'
-            swcli dataset cp cloud://pre-k8s/project/dataset/mnist/mnist-cloud/version/ge3tkylgha2tenrtmftdgyjzni3dayq mnist-local
+            swcli dataset cp --overwrite cloud://pre-k8s/project/dataset/mnist/mnist-cloud/version/ge3tkylgha2tenrtmftdgyjzni3dayq mnist-local
 
         \b
         - copy cloud instance(pre-k8s) mnist project's mnist-cloud dataset to local project(myproject) with a dataset name 'mnist-local'
@@ -266,8 +301,15 @@ def _copy(src: str, dest: str, dest_local_project: str) -> None:
         \b
         - copy standalone instance(local) project(myproject)'s mnist-local dataset to cloud instance(pre-k8s) mnist project with standalone instance dataset name 'mnist-local'
             swcli dataset cp local/project/myproject/dataset/mnist-local/version/latest cloud://pre-k8s/project/mnist
+
     """
-    DatasetTermView.copy(src, dest, dest_local_project)
+    DatasetTermView.copy(
+        src_uri=src,
+        dest_uri=dest,
+        mode=DatasetChangeMode(mode),
+        dest_local_project_uri=dest_local_project,
+        force=force,
+    )
 
 
 @dataset_cmd.command("tag", help="Dataset tag management, add or remove")

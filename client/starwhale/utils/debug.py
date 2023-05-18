@@ -1,37 +1,37 @@
 import os
-import sys
-import logging
 
 from rich import traceback
-from loguru import logger
 
-from starwhale.consts import ENV_LOG_LEVEL, ENV_LOG_VERBOSE_COUNT
+from starwhale.utils import console
+from starwhale.consts import (
+    ENV_LOG_LEVEL,
+    ENV_LOG_VERBOSE_COUNT,
+    ENV_DISABLE_PROGRESS_BAR,
+)
 
 
 def init_logger(verbose: int) -> None:
-    fmt = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
-    if verbose <= 0:
-        lvl = logging.WARNING
+    if verbose == 0:
+        lvl = console.ERROR
     elif verbose == 1:
-        lvl = logging.INFO
+        lvl = console.WARNING
+    elif verbose == 2:
+        lvl = console.INFO
+    elif verbose == 3:
+        lvl = console.DEBUG
     else:
-        lvl = logging.DEBUG
+        lvl = console.TRACE
 
-    lvl_name = logging.getLevelName(lvl)
+    console.set_level(lvl)
+    lvl_name = console.get_level_name(lvl)
     os.environ[ENV_LOG_LEVEL] = lvl_name
     os.environ[ENV_LOG_VERBOSE_COUNT] = str(verbose)
 
-    # TODO: custom debug for tb install
-    traceback.install(show_locals=True, max_frames=1, width=200)
+    if verbose > 0:
+        os.environ[ENV_DISABLE_PROGRESS_BAR] = "1"
+        console.print(f":space_invader: verbosity: {verbose}, log level: {lvl_name}")
 
-    logger.remove()
-    logger.add(
-        sys.stderr,
-        level=lvl_name,
-        colorize=True,
-        backtrace=True,
-        diagnose=True,
-        catch=True,
-        format=fmt,
+    # TODO: custom debug for tb install
+    traceback.install(
+        console=console.rich_console, show_locals=True, max_frames=1, width=200
     )
-    logger.debug(f"verbosity: {verbose}, log level: {lvl_name}")

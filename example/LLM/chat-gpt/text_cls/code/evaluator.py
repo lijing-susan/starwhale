@@ -15,8 +15,8 @@ def label_number(raw: str) -> int:
     return 0
 
 
-@evaluation.predict
-def ppl(data: dict, **kw):
+@evaluation.predict(replicas=2)
+def ppl(data):
     # create a completion
     text = data["text"]
     chat_result = openai.ChatCompletion.create(
@@ -46,7 +46,7 @@ def ppl(data: dict, **kw):
 def cmp(ppl_result):
     result, label = [], []
     for _data in ppl_result:
-        label.append(_data["ds_data"]["label"])
-        result.append(_data["result"])
+        label.append(_data["input"]["label"])
+        result.append(_data["output"])
 
     return label, result

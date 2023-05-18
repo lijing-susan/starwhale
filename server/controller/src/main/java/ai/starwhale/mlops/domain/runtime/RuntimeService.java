@@ -46,6 +46,7 @@ import ai.starwhale.mlops.domain.bundle.tag.TagException;
 import ai.starwhale.mlops.domain.bundle.tag.TagManager;
 import ai.starwhale.mlops.domain.job.bo.JobRuntime;
 import ai.starwhale.mlops.domain.job.cache.HotJobHolder;
+import ai.starwhale.mlops.domain.job.spec.RunConfig;
 import ai.starwhale.mlops.domain.job.status.JobStatus;
 import ai.starwhale.mlops.domain.project.ProjectService;
 import ai.starwhale.mlops.domain.project.bo.Project;
@@ -139,15 +140,15 @@ public class RuntimeService {
     private final String instanceUri;
 
     public RuntimeService(RuntimeMapper runtimeMapper, RuntimeVersionMapper runtimeVersionMapper,
-                          StorageService storageService, ProjectService projectService,
-                          RuntimeConverter runtimeConvertor,
-                          RuntimeVersionConverter versionConvertor, RuntimeDao runtimeDao,
-                          StoragePathCoordinator storagePathCoordinator, StorageAccessService storageAccessService,
-                          HotJobHolder jobHolder, UserService userService, IdConverter idConvertor,
-                          VersionAliasConverter versionAliasConvertor, TrashService trashService,
-                          K8sClient k8sClient, K8sJobTemplate k8sJobTemplate,
-                          RuntimeTokenValidator runtimeTokenValidator, DockerSetting dockerSetting,
-                          RunTimeProperties runTimeProperties, @Value("${sw.instance-uri}") String instanceUri) {
+            StorageService storageService, ProjectService projectService,
+            RuntimeConverter runtimeConvertor,
+            RuntimeVersionConverter versionConvertor, RuntimeDao runtimeDao,
+            StoragePathCoordinator storagePathCoordinator, StorageAccessService storageAccessService,
+            HotJobHolder jobHolder, UserService userService, IdConverter idConvertor,
+            VersionAliasConverter versionAliasConvertor, TrashService trashService,
+            K8sClient k8sClient, K8sJobTemplate k8sJobTemplate,
+            RuntimeTokenValidator runtimeTokenValidator, DockerSetting dockerSetting,
+            RunTimeProperties runTimeProperties, @Value("${sw.instance-uri}") String instanceUri) {
         this.runtimeMapper = runtimeMapper;
         this.runtimeVersionMapper = runtimeVersionMapper;
         this.storageService = storageService;
@@ -238,14 +239,19 @@ public class RuntimeService {
         return Runtime.fromEntity(entity);
     }
 
-    public RuntimeVersion findRuntimeVersion(String versioUrl) {
-        RuntimeVersionEntity entity = runtimeDao.getRuntimeVersion(versioUrl);
+    public RuntimeVersion findRuntimeVersion(String versionUrl) {
+        RuntimeVersionEntity entity = runtimeDao.getRuntimeVersion(versionUrl);
         return RuntimeVersion.fromEntity(entity);
     }
 
     public RuntimeVersion findRuntimeVersion(Long versionId) {
         RuntimeVersionEntity entity = (RuntimeVersionEntity) runtimeDao.findVersionById(versionId);
         return RuntimeVersion.fromEntity(entity);
+    }
+
+    public RuntimeVersion findBuiltInRuntimeVersion(Long projectId, String version) {
+        var runtime = runtimeDao.getRuntimeByName(Constants.SW_BUILT_IN_RUNTIME, projectId);
+        return RuntimeVersion.fromEntity(runtimeDao.getRuntimeVersion(runtime.getId(), version));
     }
 
     public Boolean deleteRuntime(RuntimeQuery query) {
@@ -266,7 +272,7 @@ public class RuntimeService {
         RuntimeEntity rt = runtimeMapper.find(runtimeId);
         if (rt == null) {
             throw new SwNotFoundException(ResourceType.BUNDLE,
-                "Unable to find runtime " + runtimeQuery.getRuntimeUrl());
+                    "Unable to find runtime " + runtimeQuery.getRuntimeUrl());
         }
 
         RuntimeVersionEntity versionEntity = null;
@@ -281,7 +287,7 @@ public class RuntimeService {
         }
         if (versionEntity == null) {
             throw new SwNotFoundException(ResourceType.BUNDLE_VERSION,
-                "Unable to find the version of runtime " + runtimeQuery.getRuntimeUrl());
+                    "Unable to find the version of runtime " + runtimeQuery.getRuntimeUrl());
         }
 
         return toRuntimeInfoVo(rt, versionEntity);
@@ -295,6 +301,7 @@ public class RuntimeService {
             return RuntimeInfoVo.builder()
                     .id(idConvertor.convert(rt.getId()))
                     .name(rt.getRuntimeName())
+                    .versionId(idConvertor.convert(versionEntity.getId()))
                     .versionAlias(versionAliasConvertor.convert(versionEntity.getVersionOrder()))
                     .versionName(versionEntity.getVersionName())
                     .versionTag(versionEntity.getVersionTag())
@@ -551,7 +558,7 @@ public class RuntimeService {
         throw new UnsupportedOperationException("Please use TrashService.recover() instead.");
     }
 
-    public BuildImageResult buildImage(String projectUrl, String runtimeUrl, String versionUrl) {
+    public BuildImageResult buildImage(String projectUrl, String runtimeUrl, String versionUrl, RunConfig runConfig) {
         var runtime = bundleManager.getBundle(BundleUrl.create(projectUrl, runtimeUrl));
         var runtimeVersion = (RuntimeVersionEntity) bundleManager.getBundleVersion(
                 BundleVersionUrl.create(projectUrl, runtimeUrl, versionUrl));
@@ -559,6 +566,7 @@ public class RuntimeService {
             throw new SwNotFoundException(ResourceType.BUNDLE_VERSION, "Not found.");
         }
 
+        // TODO: search image name in all records' built_image
         var builtImage = runtimeVersion.getBuiltImage();
         if (StringUtils.hasText(builtImage)) {
             log.debug("runtime:{}-{}'s image:{} has already existed.",
@@ -587,20 +595,25 @@ public class RuntimeService {
             k8sJobTemplate.updateAnnotations(job.getMetadata(), Map.of("image", image.toString()));
 
             Map<String, ContainerOverwriteSpec> ret = new HashMap<>();
-            List<V1EnvVar> envVars = List.of(
+            List<V1EnvVar> envVars = new ArrayList<>(List.of(
                     new V1EnvVar().name("SW_INSTANCE_URI").value(instanceUri),
                     new V1EnvVar().name("SW_PROJECT").value(project.getName()),
                     new V1EnvVar().name("SW_RUNTIME_VERSION").value(
-                        String.format("%s/version/%s", runtime.getName(), runtimeVersion.getVersionName())),
+                            String.format("%s/version/%s", runtime.getName(), runtimeVersion.getVersionName())),
                     new V1EnvVar().name("SW_PYPI_INDEX_URL").value(
-                        runTimeProperties.getPypi().getIndexUrl()),
+                            runTimeProperties.getPypi().getIndexUrl()),
                     new V1EnvVar().name("SW_PYPI_EXTRA_INDEX_URL").value(
-                        runTimeProperties.getPypi().getExtraIndexUrl()),
+                            runTimeProperties.getPypi().getExtraIndexUrl()),
                     new V1EnvVar().name("SW_PYPI_TRUSTED_HOST").value(
-                        runTimeProperties.getPypi().getTrustedHost()),
+                            runTimeProperties.getPypi().getTrustedHost()),
                     new V1EnvVar().name("SW_TOKEN").value(
-                        runtimeTokenValidator.getToken(user, runtimeVersion.getId()))
+                            runtimeTokenValidator.getToken(user, runtimeVersion.getId())))
             );
+            if (null != runConfig && null != runConfig.getEnvVars()) {
+                List<V1EnvVar> collect = runConfig.getEnvVars().entrySet().stream().map(e -> K8sJobTemplate.toEnvVar(e))
+                        .collect(Collectors.toList());
+                envVars.addAll(collect);
+            }
             k8sJobTemplate.getInitContainerTemplates(job).forEach(templateContainer -> {
                 ContainerOverwriteSpec containerOverwriteSpec = new ContainerOverwriteSpec(templateContainer.getName());
                 containerOverwriteSpec.setEnvs(envVars);
@@ -646,9 +659,9 @@ public class RuntimeService {
 
     private boolean validateDockerSetting(DockerSetting setting) {
         return null != setting
-            && StringUtils.hasText(setting.getRegistry())
-            && StringUtils.hasText(setting.getUserName())
-            && StringUtils.hasText(setting.getPassword());
+                && StringUtils.hasText(setting.getRegistry())
+                && StringUtils.hasText(setting.getUserName())
+                && StringUtils.hasText(setting.getPassword());
     }
 
     public boolean updateBuiltImage(String version, String image) {

@@ -12,17 +12,14 @@ from types import TracebackType
 from pathlib import Path
 
 import yaml
-from loguru import logger
 
-from starwhale.utils import now_str, random_str, gen_uniq_version
+from starwhale.utils import console, now_str, random_str, gen_uniq_version
 from starwhale.consts import SW_AUTO_DIRNAME, DEFAULT_MANIFEST_NAME
-from starwhale.base.uri import URI
 from starwhale.utils.fs import ensure_dir, ensure_file
-from starwhale.base.type import URIType, InstanceType
 from starwhale.consts.env import SWEnv
 from starwhale.utils.error import NoSupportError
-from starwhale.utils.config import SWCliConfigMixed
 from starwhale.utils.dict_util import flatten
+from starwhale.base.uri.project import Project
 from starwhale.core.dataset.type import BaseArtifact
 
 from .base import (
@@ -50,7 +47,7 @@ class Tracker:
     def __init__(
         self,
         name: str,
-        project_uri: URI,
+        project_uri: Project,
         access_token: str = "",
         auto_run_collect: bool = True,
         auto_framework_hook: bool = True,
@@ -68,15 +65,15 @@ class Tracker:
             raise ValueError("name field is empty")
         self.name = name
 
-        if not project_uri.project:
+        if not project_uri.name:
             raise ValueError(
                 f"{project_uri} is wrong format, that cannot fetch project field"
             )
 
-        if project_uri.instance_type == InstanceType.CLOUD:
+        if project_uri.instance.is_cloud:
             access_token = (
                 access_token
-                or SWCliConfigMixed().get_sw_token(instance=project_uri.instance)
+                or project_uri.instance.token
                 or os.environ.get(SWEnv.instance_token, "")
             )
             if not access_token:
@@ -133,7 +130,7 @@ class Tracker:
         trace: TracebackType,
     ) -> None:
         if value:  # pragma: no cover
-            logger.warning(f"type:{type}, exception:{value}, traceback:{trace}")
+            console.warning(f"type:{type}, exception:{value}, traceback:{trace}")
 
         self.end()
 
@@ -146,7 +143,7 @@ class Tracker:
     def start(
         cls,
         name: str = "",
-        project_uri: t.Optional[t.Union[str, URI]] = None,
+        project_uri: t.Optional[t.Union[str, Project]] = None,
         access_token: str = "",
         auto_run_collect: bool = True,
         auto_framework_hook: bool = True,
@@ -203,19 +200,10 @@ class Tracker:
                 raise RuntimeError(f"{Tracker._instance} has already been initialized")
 
             if project_uri is None:
-                scm = SWCliConfigMixed()
-                _inst = scm.current_instance
-                _prj = scm.current_project
-                if not _inst or not _prj:
-                    raise ValueError(
-                        f"cannot get default project uri(instance:{_inst}, project:{_prj}) from swcli config"
-                    )
-                project_uri = URI(
-                    f"{_inst}/project/{_prj}", expected_type=URIType.PROJECT
-                )
+                project_uri = Project()
             elif isinstance(project_uri, str):
-                project_uri = URI(project_uri, expected_type=URIType.PROJECT)
-            elif isinstance(project_uri, URI):
+                project_uri = Project(project_uri)
+            elif isinstance(project_uri, Project):
                 project_uri = project_uri
             else:
                 raise TypeError(

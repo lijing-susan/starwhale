@@ -1,6 +1,7 @@
 from enum import Enum, unique
 
 from starwhale.utils.error import NoSupportError
+from starwhale.base.uri.resource import ResourceType
 
 
 class InstanceType:
@@ -8,20 +9,11 @@ class InstanceType:
     CLOUD = "cloud"
 
 
-class URIType:
-    INSTANCE = "instance"
-    PROJECT = "project"
-    MODEL = "model"
-    DATASET = "dataset"
-    RUNTIME = "runtime"
-    JOB = "job"
-    UNKNOWN = "unknown"
-
-
 class RunSubDirType:
     DATASET = "dataset"
     STATUS = "status"
     RUNLOG = "runlog"
+    SNAPSHOT = "snapshot"
     LOG = "log"
     SWMP = "swmp"
     SWRT = "swrt"
@@ -55,12 +47,12 @@ class RuntimeLockFileType:
     CONDA = "conda-sw-lock.yaml"
 
 
-def get_bundle_type_by_uri(uri_type: str) -> str:
-    if uri_type == URIType.DATASET:
+def get_bundle_type_by_uri(uri_type: ResourceType) -> str:
+    if uri_type == ResourceType.dataset:
         return BundleType.DATASET
-    elif uri_type == URIType.MODEL:
+    elif uri_type == ResourceType.model:
         return BundleType.MODEL
-    elif uri_type == URIType.RUNTIME:
+    elif uri_type == ResourceType.runtime:
         return BundleType.RUNTIME
     else:
         raise NoSupportError(uri_type)
@@ -74,3 +66,15 @@ class DependencyType(Enum):
     CONDA_ENV_FILE = "conda_env_file"
     WHEEL = "wheel"
     NATIVE_FILE = "native_file"
+
+
+@unique
+class DatasetChangeMode(Enum):
+    PATCH = "patch"
+    OVERWRITE = "overwrite"
+
+
+@unique
+class PredictLogMode(Enum):
+    PLAIN = "plain"
+    PICKLE = "pickle"

@@ -9,8 +9,8 @@ from pathlib import Path
 from collections import defaultdict
 
 import yaml
-from loguru import logger
 
+from starwhale.utils import console
 from starwhale.consts import DecoratorInjectAttr
 from starwhale.utils.fs import ensure_file
 from starwhale.base.mixin import ASDictMixin
@@ -20,6 +20,7 @@ from starwhale.api._impl.evaluation import PipelineHandler
 
 
 class Handler(ASDictMixin):
+    _registered_functions: t.Dict[str, t.Callable] = {}
     _registered_handlers: t.Dict[str, Handler] = {}
     _registering_lock = threading.Lock()
 
@@ -104,6 +105,12 @@ class Handler(ASDictMixin):
         return results
 
     @classmethod
+    def clear_registered_handlers(cls) -> None:
+        with cls._registering_lock:
+            cls._registered_handlers.clear()
+            cls._registered_functions.clear()
+
+    @classmethod
     def register(
         cls,
         resources: t.Optional[t.Dict[str, t.Any]] = None,
@@ -183,6 +190,7 @@ class Handler(ASDictMixin):
 
             with cls._registering_lock:
                 cls._registered_handlers[key_name] = _handler
+                cls._registered_functions[key_name] = func
 
             setattr(func, DecoratorInjectAttr.Step, True)
             return func
@@ -241,7 +249,7 @@ class Handler(ASDictMixin):
         for module_name in search_modules:
             # handler format: a.b.c, a.b.c:d
             module_name = module_name.split(":")[0].strip()
-            if not module_name:
+            if not module_name or module_name == "__main__":
                 continue
 
             # reload for the multi model.build in one python process
@@ -255,14 +263,15 @@ class Handler(ASDictMixin):
                     and issubclass(v, PipelineHandler)
                     and v != PipelineHandler
                 ):
-                    ppl_func = getattr(v, "ppl")
-                    cmp_func = getattr(v, "cmp")
-                    Handler.register(replicas=2, name="ppl")(ppl_func)
+                    # compatible with old version: ppl and cmp function are renamed to predict and evaluate
+                    predict_func = getattr(v, "predict", None) or getattr(v, "ppl")
+                    evaluate_func = getattr(v, "evaluate", None) or getattr(v, "cmp")
+                    Handler.register(replicas=1, name="predict")(predict_func)
                     Handler.register(
                         replicas=1,
-                        needs=[ppl_func],
-                        name="cmp",
-                    )(cmp_func)
+                        needs=[predict_func],
+                        name="evaluate",
+                    )(evaluate_func)
 
 
 def generate_jobs_yaml(
@@ -270,8 +279,9 @@ def generate_jobs_yaml(
     package_dir: t.Union[Path, str],
     yaml_path: t.Union[Path, str],
 ) -> None:
-    logger.debug(f"ingest run_handlers {search_modules} at {package_dir}")
-
+    console.print(
+        f":rocket: generate jobs yaml from modules: {search_modules} , package rootdir: {package_dir}"
+    )
     expanded_handlers = Handler.get_registered_handlers_with_expanded_needs(
         search_modules, Path(package_dir)
     )

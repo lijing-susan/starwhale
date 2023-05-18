@@ -2,7 +2,6 @@ import sys
 import typing as t
 
 from rich import box
-from loguru import logger
 from rich.panel import Panel
 from rich.table import Table
 from rich.pretty import Pretty
@@ -17,11 +16,12 @@ from starwhale.consts import (
     DEFAULT_REPORT_COLS,
     DEFAULT_MANIFEST_NAME,
 )
-from starwhale.base.uri import URI
-from starwhale.base.type import URIType, JobOperationType
+from starwhale.base.type import JobOperationType
 from starwhale.base.view import BaseTermView
 from starwhale.api._impl.metric import MetricKind
-from starwhale.base.uricomponents.instance import Instance
+from starwhale.base.uri.project import Project
+from starwhale.base.uri.instance import Instance
+from starwhale.base.uri.resource import Resource, ResourceType
 
 from .model import Job
 
@@ -30,8 +30,7 @@ class JobTermView(BaseTermView):
     def __init__(self, job_uri: str) -> None:
         super().__init__()
         self.raw_uri = job_uri
-        self.uri = URI(job_uri, expected_type=URIType.JOB)
-        logger.debug(f"eval job:{self.raw_uri}")
+        self.uri = Resource(job_uri, typ=ResourceType.job)
         self.job = Job.get_job(self.uri)
         self._action_run_map = {
             JobOperationType.CANCEL: self.job.cancel,
@@ -93,7 +92,7 @@ class JobTermView(BaseTermView):
             # TODO support changing host and port
             host = "127.0.0.1"
             port = 8000
-            url = f"http://{host}:{port}/projects/{self.uri.project}/evaluations/{ver}/results?token=local"
+            url = f"http://{host}:{port}/projects/{self.uri.project.name}/evaluations/{ver}/results?token=local"
             console.print(f":tea: open {url} in browser")
             import uvicorn
 
@@ -108,8 +107,8 @@ class JobTermView(BaseTermView):
 
         if "location" in _rt:
             console.rule("Process dirs")
-            console.print(f":cactus: ppl: {_rt['location']['ppl']}")
-            console.print(f":camel: cmp: {_rt['location']['cmp']}")
+            console.print(f":cactus: predict: {_rt['location']['predict']}")
+            console.print(f":camel: evaluate: {_rt['location']['evaluate']}")
 
         if "tasks" in _rt:
             self._print_tasks(_rt["tasks"][0])
@@ -235,7 +234,7 @@ class JobTermView(BaseTermView):
         page: int = DEFAULT_PAGE_IDX,
         size: int = DEFAULT_PAGE_SIZE,
     ) -> t.Tuple[t.List[t.Any], t.Dict[str, t.Any]]:
-        _uri = URI(project_uri, expected_type=URIType.PROJECT)
+        _uri = Project(project_uri)
         cls.must_have_project(_uri)
         jobs, pager = Job.list(_uri, page, size)
         jobs = sort_obj_list(jobs, [Order("manifest.created_at", True)])

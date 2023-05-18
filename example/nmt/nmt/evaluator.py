@@ -24,7 +24,7 @@ class NMTPipeline(PipelineHandler):
         self.max_length = MAX_LENGTH
 
     @torch.no_grad()
-    def ppl(self, data: dict, **kw):
+    def ppl(self, data):
         input_tensor = sentence_to_tensor(
             self.vocab.vin, data["english"].content, self.device
         )
@@ -62,8 +62,8 @@ class NMTPipeline(PipelineHandler):
     def cmp(self, _data_loader):
         result, label = [], []
         for _data in _data_loader:
-            result.append(_data["result"])
-            label.append(_data["ds_data"]["french"].content)
+            result.append(_data["output"])
+            label.append(_data["input"]["french"].content)
 
         bleu = calculate_bleu(result, [label])
         print(f"bleu: {bleu}")

@@ -1,0 +1,13 @@
+api_version: 1.1
+dependencies:
+  - conda:
+      - numpy
+  - pip:
+      - git+https://github.com/star-whale/starwhale.git@94eeff7863b61480ffb83d055d79eeb6ceb1bd21#subdirectory=example/runtime/pytorch/dummy
+  - wheels:
+      - starwhale-0.0.0.dev0-py3-none-any.whl # generate by make build-wheel in the cli_test.sh script
+environment:
+  arch: noarch
+  os: ubuntu:20.04
+mode: conda
+name: simple-test-conda

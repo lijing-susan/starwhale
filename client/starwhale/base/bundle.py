@@ -1,15 +1,15 @@
 import os
+import abc
 import typing as t
 import tarfile
 import platform
-from abc import ABCMeta, abstractmethod, abstractclassmethod
+from abc import ABCMeta, abstractmethod
 from pathlib import Path
 from contextlib import ExitStack
 
 import yaml
-from loguru import logger
 from fs.walk import Walker
-from fs.tarfs import TarFS
+from typing_extensions import Protocol
 
 from starwhale.utils import console, now_str, gen_uniq_version
 from starwhale.consts import (
@@ -24,18 +24,18 @@ from starwhale.consts import (
 from starwhale.version import STARWHALE_VERSION
 from starwhale.base.tag import StandaloneTag
 from starwhale.utils.fs import move_dir, empty_dir, ensure_dir, ensure_file, extract_tar
+from starwhale.base.store import BaseStorage, BundleField
 from starwhale.utils.venv import SUPPORTED_PIP_REQ
 from starwhale.utils.error import FileTypeError, NotFoundError, MissingFieldError
 from starwhale.utils.config import SWCliConfigMixed
-
-from .uri import URI
-from .store import BundleField
+from starwhale.base.uri.project import Project
+from starwhale.base.uri.resource import Resource
 
 
 class BaseBundle(metaclass=ABCMeta):
-    def __init__(self, uri: URI) -> None:
+    def __init__(self, uri: Resource) -> None:
         self.uri = uri
-        self.name = self.uri.object.name
+        self.name = self.uri.name
         self.sw_config = SWCliConfigMixed()
         self.yaml_name = ""
 
@@ -74,7 +74,7 @@ class BaseBundle(metaclass=ABCMeta):
     @classmethod
     def list(
         cls,
-        project_uri: URI,
+        project_uri: Project,
         page: int = DEFAULT_PAGE_IDX,
         size: int = DEFAULT_PAGE_SIZE,
         filters: t.Optional[t.Union[t.Dict[str, t.Any], t.List[str]]] = None,
@@ -121,12 +121,13 @@ class BaseBundle(metaclass=ABCMeta):
 
         return True
 
-    @abstractclassmethod
-    def _get_cls(cls, uri: URI) -> t.Any:
+    @classmethod
+    @abc.abstractmethod
+    def _get_cls(cls, uri: Project) -> t.Any:
         raise NotImplementedError
 
     @classmethod
-    def copy(cls, src_uri: str, dest_uri: str) -> None:
+    def copy(cls, src_uri: Resource, dest_uri: str) -> None:
         raise NotImplementedError
 
     def extract(self, force: bool = False, target: t.Union[str, Path] = "") -> Path:
@@ -143,7 +144,7 @@ class BaseBundle(metaclass=ABCMeta):
             dst = self.store.snapshot_workdir  # type: ignore
             ensure_dir(dst.parent)
             os.rename(src, dst)
-            console.print(f"finish gen resource @ {dst}")
+            console.print(f":100: finish gen resource @ {dst}")
 
         with ExitStack() as stack:
             stack.callback(when_exit)
@@ -155,10 +156,18 @@ class BaseBundle(metaclass=ABCMeta):
 
     @property
     def version(self) -> str:
-        return getattr(self, "_version", "") or self.uri.object.version
+        return getattr(self, "_version", "") or self.uri.version
 
 
-class LocalStorageBundleMixin:
+# https://mypy.readthedocs.io/en/latest/more_types.html#mixin-classes
+class LocalStorageBundleProtocol(Protocol):
+    uri: Resource
+    _version: str
+    store: BaseStorage
+    tag: StandaloneTag
+
+
+class LocalStorageBundleMixin(LocalStorageBundleProtocol):
     def __init__(self) -> None:
         self._manifest: t.Dict[str, t.Any] = {}
 
@@ -168,34 +177,29 @@ class LocalStorageBundleMixin:
             sw_version=STARWHALE_VERSION,
         )
         # TODO: add signature for import files: model, config
-        _fpath = self.store.snapshot_workdir / DEFAULT_MANIFEST_NAME  # type: ignore
+        _fpath = self.store.snapshot_workdir / DEFAULT_MANIFEST_NAME
         ensure_file(_fpath, yaml.safe_dump(self._manifest, default_flow_style=False))
-        logger.info(f"[step:manifest]render manifest: {_fpath}")
 
     def _gen_version(self) -> None:
-        logger.info("[step:version]create version...")
         if not getattr(self, "_version", ""):
             self._version = gen_uniq_version()
 
-        self.uri.object.version = self._version  # type:ignore
-        logger.info(f"[step:version]version: {self._version}")
-        console.print(f":new: version {self._version[:SHORT_VERSION_CNT]}")  # type: ignore
+        self.uri.version = self._version
+        console.debug(f":new: version {self._version[:SHORT_VERSION_CNT]}")
         self._manifest["version"] = self._version
         self._manifest[CREATED_AT_KEY] = now_str()
 
     def _make_auto_tags(self) -> None:
-        self.tag.add_fast_tag()  # type: ignore
+        self.tag.add_fast_tag()
 
     def _make_tar(self, ftype: str = "") -> None:
-        out = self.store.bundle_dir / f"{self._version}{ftype}"  # type: ignore
-        ensure_dir(self.store.bundle_dir)  # type: ignore
-        logger.info(f"[step:tar]try to tar {out} ...")
+        out = self.store.bundle_dir / f"{self._version}{ftype}"
+        ensure_dir(self.store.bundle_dir)
 
         with tarfile.open(out, "w:") as tar:
-            tar.add(str(self.store.snapshot_workdir), arcname="")  # type: ignore
+            tar.add(str(self.store.snapshot_workdir), arcname="")
 
         console.print(f":butterfly: {ftype} bundle:{out}")
-        logger.info("[step:tar]finish to make bundle tar")
 
     @classmethod
     def _do_validate_yaml(cls, path: Path) -> None:
@@ -206,50 +210,11 @@ class LocalStorageBundleMixin:
         if not path.name.endswith(YAML_TYPES):
             raise FileTypeError(f"{path} file type is not yaml|yml")
 
-    def _get_bundle_info(self) -> t.Dict[str, t.Any]:
-        _uri = self.uri  # type: ignore
-        _store = self.store  # type: ignore
-
-        if not _store.bundle_path.exists():
-            return {}
-
-        _manifest: t.Dict[str, t.Any] = {
-            "uri": _uri.full_uri,
-            "project": _uri.project,
-            "name": _uri.object.name,
-            "snapshot_workdir": str(_store.snapshot_workdir),
-            "bundle_path": str(_store.bundle_path),
-        }
-
-        if _uri.object.version:
-            _tag = StandaloneTag(_uri)
-            _manifest["version"] = _uri.object.version
-            _manifest["config"] = {}
-            _manifest["tags"] = _tag.list()
-
-            if _store.bundle_path.is_dir():
-                _manifest["config"].update(_store.manifest)
-            else:
-                if _store.snapshot_workdir.exists():
-                    _manifest["config"].update(_store.manifest)
-                elif _store.bundle_path.exists():
-                    with TarFS(str(_store.bundle_path)) as tar:
-                        with tar.open(DEFAULT_MANIFEST_NAME) as f:
-                            _om = yaml.safe_load(f)
-                        _manifest["config"].update(_om)
-                else:
-                    raise NotFoundError(
-                        f"{_store.bundle_path} and {_store.snapshot_workdir}"
-                    )
-        else:
-            _manifest["history"] = self.history()  # type: ignore
-        return _manifest
-
     def _do_extract(self, force: bool = False, target: t.Union[str, Path] = "") -> Path:
-        _store = self.store  # type: ignore
-        _uri = self.uri  # type: ignore
+        _store = self.store
+        _uri = self.uri
 
-        if not _uri.object.version:
+        if not _uri.version:
             raise MissingFieldError("no version")
 
         _target: Path = Path(target) if target else _store.snapshot_workdir
@@ -287,14 +252,12 @@ class LocalStorageBundleMixin:
 
                 _exclude.append(_l)
 
-        # Notice: if pass [] as exclude_dirs value, walker will failed
+        # Notice: if pass [] as exclude_dirs value, walker will fail
         _exclude = _exclude or None  # type: ignore
         return Walker(filter=_filter, exclude_dirs=_exclude)
 
     def _do_remove(self, force: bool = False) -> t.Tuple[bool, str]:
-        from .store import BaseStorage
-
-        store: BaseStorage = self.store  # type: ignore
+        store = self.store
 
         if force:
             empty_dir(store.loc)

@@ -19,7 +19,7 @@ class TextClassificationHandler(PipelineHandler):
             task="text-classification", model=model, tokenizer=tokenizer
         )
 
-    def ppl(self, data: dict, **kw):
+    def ppl(self, data):
         _r = self.mode(data["text"])
         return _LABEL_NAMES.index(_r[0]["label"])
 
@@ -33,7 +33,7 @@ class TextClassificationHandler(PipelineHandler):
     def cmp(self, ppl_result):
         result, label = [], []
         for _data in ppl_result:
-            label.append(_data["ds_data"]["label"])
-            result.append(_data["result"])
+            label.append(_data["input"]["label"])
+            result.append(_data["output"])
 
         return label, result

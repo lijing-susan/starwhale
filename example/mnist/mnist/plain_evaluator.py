@@ -7,7 +7,9 @@ import gradio
 from PIL import Image as PILImage
 from torchvision import transforms
 
-from starwhale import Image, evaluation, multi_classification
+from starwhale import Image
+from starwhale import model as starwhale_model
+from starwhale import evaluation, multi_classification
 from starwhale.api.service import api
 
 try:
@@ -29,7 +31,7 @@ model: t.Optional[Net] = None
     fail_on_error=False,
     auto_log=True,
 )
-def predict_image(data: t.Dict, **kw: t.Any) -> t.Any:
+def predict_image(data: t.Dict) -> t.Any:
     img: Image = data["img"]
     _tensor = torch.tensor(bytearray(img.to_bytes()), dtype=torch.uint8).reshape(
         img.shape[0], img.shape[1]  # type: ignore
@@ -60,9 +62,9 @@ def predict_image(data: t.Dict, **kw: t.Any) -> t.Any:
 def evaluate_results(predict_result_iter: t.Iterator) -> t.Tuple:
     result, label, pr = [], [], []
     for _data in predict_result_iter:
-        label.append(_data["ds_data"]["label"])
-        result.append(_data["result"][0])
-        pr.append(_data["result"][1])
+        label.append(_data["input"]["label"])
+        result.append(_data["output"][0])
+        pr.append(_data["output"][1])
     return label, result, pr
 
 
@@ -78,9 +80,28 @@ def load_model() -> Net:
     model = Net().to(device)
     model.load_state_dict(
         torch.load(  # type: ignore
-            str(Path(__file__).parent.parent / "models" / "mnist_cnn.pt"),
+            str(ROOTDIR / "models" / "mnist_cnn.pt"),
             map_location=device,
         )
     )
     model.eval()
     return model
+
+
+if __name__ == "__main__":
+    # use imported modules as search modules
+    starwhale_model.build(workdir=ROOTDIR)
+
+    # use function object as search modules
+    #    starwhale_model.build(
+    #        name="mnist",
+    #        workdir=ROOTDIR,
+    #        modules=[predict_image, evaluate_results],
+    #    )
+
+    # use import-path str as search modules
+    # starwhale_model.build(
+    #    name="mnist",
+    #    workdir=ROOTDIR,
+    #    modules=["mnist.plain_evaluator"],
+    # )

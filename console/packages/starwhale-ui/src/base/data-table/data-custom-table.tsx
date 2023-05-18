@@ -1,4 +1,4 @@
-import React, { useCallback } from 'react'
+import React, { useCallback, useEffect } from 'react'
 import { VariableSizeGrid } from 'react-window'
 import AutoSizer from 'react-virtualized-auto-sizer'
 import { SORT_DIRECTIONS } from './constants'
@@ -60,6 +60,7 @@ export function DataTable({
     resizableColumnWidths = false,
     compareable = false,
     queryinline = false,
+    previewable = false,
     rows: allRows,
     rowActions,
     rowHeight = 44,
@@ -70,6 +71,7 @@ export function DataTable({
     textQuery = '',
     getId,
     controlRef,
+    onPreview,
 }: DataTablePropsT) {
     const [, theme] = themedUseStyletron()
     const locale = React.useContext(LocaleContext)
@@ -125,24 +127,24 @@ export function DataTable({
         ),
         []
     )
-
-    // React.useEffect(() => {
-    //     setMeasuredWidths((prev) => {
-    //         return columns.map((v) => prev.get(v.key) || 60)
-    //     })
-    //     setResizeDeltas((prev) => {
-    //         return columns.map((v, index) => prev.get(v.key) || 0)
-    //     })
-    // }, [columns])
+    const columnKeys = React.useMemo(() => columns.map((c) => c.key).join(','), [columns])
+    useEffect(() => {
+        if (gridRef) {
+            // console.log('reset grid when columns change reorder')
+            gridRef.resetAfterIndices({
+                columnIndex: itemIndexs.overscanColumnStartIndex,
+                rowIndex: itemIndexs.overscanRowStartIndex,
+            })
+        }
+    }, [gridRef, columnKeys])
 
     const [scrollLeft, setScrollLeft] = React.useState(0)
     const resetAfterColumnIndex = React.useCallback(
-        (columnIndex) => {
-            // console.log(gridRef, columnIndex)
+        _.debounce((columnIndex) => {
             if (gridRef) {
                 gridRef.resetAfterColumnIndex?.(columnIndex, true)
             }
-        },
+        }, 10),
         [gridRef]
     )
     const handleWidthsChange = React.useCallback(
@@ -162,7 +164,7 @@ export function DataTable({
             })
             resetAfterColumnIndex(columnIndex)
         },
-        [setResizeDeltas, resetAfterColumnIndex]
+        [columns, setResizeDeltas, resetAfterColumnIndex]
     )
     const [isScrollingX, setIsScrollingX] = React.useState(false)
     const [recentlyScrolledX, setRecentlyScrolledX] = React.useState(false)
@@ -274,11 +276,12 @@ export function DataTable({
     const [browserScrollbarWidth, setBrowserScrollbarWidth] = React.useState(0)
     const normalizedWidths = React.useMemo(() => {
         const resizedWidths = columns.map((c, i) => {
-            const w = (measuredWidths.get(c.key) ?? c.minWidth) + (resizeDeltas.get(c.key) ?? 0)
-            if (c.maxWidth && w > c.maxWidth) {
-                return c.maxWidth
-            }
-            return w
+            const w =
+                !measuredWidths.get(c.key) || _.isNaN(measuredWidths.get(c.key))
+                    ? c.minWidth
+                    : measuredWidths.get(c.key)
+            const delta = !resizeDeltas.get(c.key) || _.isNaN(resizeDeltas.get(c.key)) ? 0 : resizeDeltas.get(c.key)
+            return w + delta
         })
 
         if (gridRef) {
@@ -313,11 +316,18 @@ export function DataTable({
                 result.push(gridProps.width - sum(result) - scrollbarWidth - 2)
 
                 resetAfterColumnIndex(0)
-                return result
+                return result.reduce((acc, width, i) => {
+                    acc.set(columns[i].key, width)
+                    return acc
+                }, new Map())
             }
         }
 
-        return resizedWidths
+        // turn to map
+        return resizedWidths.reduce((acc, width, i) => {
+            acc.set(columns[i].key, width)
+            return acc
+        }, new Map())
     }, [
         gridRef,
         measuredWidths,
@@ -390,6 +400,7 @@ export function DataTable({
             isRowSelected,
             isQueryInline,
             isSelectable,
+            previewable,
             onRowMouseEnter: handleRowMouseEnter,
             onSelectOne,
             columns,
@@ -397,6 +408,7 @@ export function DataTable({
             textQuery,
             normalizedWidths,
             getId,
+            onPreview,
         }
     }, [
         handleRowMouseEnter,
@@ -405,21 +417,23 @@ export function DataTable({
         isRowSelected,
         isSelectable,
         isQueryInline,
+        previewable,
         rows,
         columns,
         onSelectOne,
         textQuery,
         normalizedWidths,
         getId,
+        onPreview,
     ])
 
     // console.log(rowHighlightIndex, resizeDeltas)
 
     const columnWidth = React.useCallback(
         (index) => {
-            return normalizedWidths[index]
+            return normalizedWidths.get(columns[index].key)
         },
-        [normalizedWidths]
+        [normalizedWidths, columns]
     )
 
     const InnerElement = React.useMemo(() => {

@@ -65,12 +65,26 @@ public class RuntimeDao implements BundleAccessor, BundleVersionAccessor, TagAcc
         return runtime;
     }
 
+    public RuntimeEntity getRuntimeByName(String name, Long projectId) {
+        return runtimeMapper.findByName(name, projectId, false);
+    }
+
+    public RuntimeVersionEntity getRuntimeVersion(Long runtimeId, String version) {
+        RuntimeVersionEntity entity = runtimeVersionMapper.findByNameAndRuntimeId(version, runtimeId);
+        if (entity == null) {
+            throw new SwNotFoundException(ResourceType.BUNDLE_VERSION,
+                    String.format("Unable to find Runtime Version %s", version));
+        }
+        return entity;
+    }
+
     public RuntimeVersionEntity getRuntimeVersion(String versionUrl) {
         RuntimeVersionEntity entity;
         if (idConvertor.isId(versionUrl)) {
             var id = idConvertor.revert(versionUrl);
             entity = runtimeVersionMapper.find(id);
         } else {
+            // TODO need deprecated, it's not unique
             entity = runtimeVersionMapper.findByNameAndRuntimeId(versionUrl, null);
         }
         if (entity == null) {

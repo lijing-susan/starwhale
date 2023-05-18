@@ -7,9 +7,10 @@ from unittest.mock import patch, MagicMock, PropertyMock
 import httpx
 from fastapi.testclient import TestClient
 
+from starwhale import Link
 from starwhale.utils.fs import ensure_file
 from starwhale.web.server import Server
-from starwhale.base.uricomponents.instance import Instance
+from starwhale.base.uri.instance import Instance
 
 
 def test_static_faked_response():
@@ -59,12 +60,12 @@ def test_datastore_list_tables(root: MagicMock, tmpdir: Path):
     assert resp.status_code == 200
     assert resp.json()["data"]["tables"] == []
 
-    ensure_file(tmpdir / "a" / "foo.bin", b"", parents=True)
-    ensure_file(tmpdir / "b" / "c" / "foo.bin", b"", parents=True)
+    ensure_file(tmpdir / "a" / "foo.sw-datastore.zip", b"", parents=True)
+    ensure_file(tmpdir / "b" / "c" / "foo.sw-datastore.zip", b"", parents=True)
 
     resp = client.post("/api/v1/datastore/listTables", content='{"prefix": ""}')
     assert resp.status_code == 200
-    assert set(resp.json()["data"]["tables"]) == {"a", "b/c"}
+    assert set(resp.json()["data"]["tables"]) == {"a/foo", "b/c/foo"}
 
 
 @patch("starwhale.api._impl.data_store.LocalDataStore.scan_tables")
@@ -81,7 +82,17 @@ def test_datastore_query_table(mock_scan: MagicMock):
     assert resp.json()["data"]["records"] == []
 
     mock_scan.return_value = [
-        {"a": 1, "b": 2.0, "c": "3", "d": True, "e": None, "f": [1, 2, 3]}
+        {
+            "a": 1,
+            "b": 2.0,
+            "c": "3",
+            "d": True,
+            "e": None,
+            "f": [1, 2, 3],
+            "g": (4, 5, 6),
+            "h": {"i": 7},
+            "i": Link("foo"),
+        }
     ]
     resp = client.post(
         "/api/v1/datastore/queryTable", json={"tableName": "a/b/c", "limit": 10}
@@ -94,9 +105,139 @@ def test_datastore_query_table(mock_scan: MagicMock):
         {"name": "d", "type": "BOOL"},
         {"name": "e", "type": "UNKNOWN"},
         {"name": "f", "elementType": {"type": "INT64"}, "type": "LIST"},
+        {"name": "g", "elementType": {"type": "INT64"}, "type": "TUPLE"},
+        {
+            "name": "h",
+            "keyType": {"type": "STRING"},
+            "valueType": {"type": "INT64"},
+            "type": "MAP",
+        },
+        {
+            "name": "i",
+            "pythonType": "starwhale.core.dataset.type.Link",
+            "type": "OBJECT",
+            "attributes": [
+                {"name": "_type", "type": "STRING"},
+                {"name": "uri", "type": "STRING"},
+                {"name": "scheme", "type": "STRING"},
+                {"name": "offset", "type": "INT64"},
+                {"name": "size", "type": "INT64"},
+                {"name": "data_type", "type": "UNKNOWN"},
+                {"name": "_signed_uri", "type": "STRING"},
+                {
+                    "keyType": {"type": "UNKNOWN"},
+                    "name": "extra_info",
+                    "type": "MAP",
+                    "valueType": {"type": "UNKNOWN"},
+                },
+            ],
+        },
     ]
     assert resp.json()["data"]["records"] == [
-        {"a": "1", "b": "2.0", "c": "3", "d": "True", "e": "None", "f": "[1, 2, 3]"}
+        {
+            "a": "1",
+            "b": "2.0",
+            "c": "3",
+            "d": "True",
+            "e": "None",
+            "f": "[1, 2, 3]",
+            "g": "(4, 5, 6)",
+            "h": "{'i': 7}",
+            "i": "Link foo",
+        }
+    ]
+
+    # request with encode with type
+    resp = client.post(
+        "/api/v1/datastore/queryTable",
+        json={
+            "tableName": "a/b/c",
+            "limit": 10,
+            "encodeWithType": True,
+            "rawResult": True,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["columnHints"] == {
+        "a": {"type": "INT64"},
+        "b": {"type": "FLOAT64"},
+        "c": {"type": "STRING"},
+        "d": {"type": "BOOL"},
+        "e": {"type": "UNKNOWN"},
+        "f": {"elementType": {"type": "INT64"}, "type": "LIST"},
+        "g": {"elementType": {"type": "INT64"}, "type": "TUPLE"},
+        "h": {
+            "keyType": {"type": "STRING"},
+            "valueType": {"type": "INT64"},
+            "type": "MAP",
+        },
+        "i": {
+            "attributes": [
+                {"name": "_type", "type": "STRING"},
+                {"name": "uri", "type": "STRING"},
+                {"name": "scheme", "type": "STRING"},
+                {"name": "offset", "type": "INT64"},
+                {"name": "size", "type": "INT64"},
+                {"name": "data_type", "type": "UNKNOWN"},
+                {"name": "_signed_uri", "type": "STRING"},
+                {
+                    "keyType": {"type": "UNKNOWN"},
+                    "name": "extra_info",
+                    "type": "MAP",
+                    "valueType": {"type": "UNKNOWN"},
+                },
+            ],
+            "pythonType": "starwhale.core.dataset.type.Link",
+            "type": "OBJECT",
+        },
+    }
+    assert resp.json()["data"]["records"] == [
+        {
+            "a": {"type": "INT64", "value": "1"},
+            "b": {"type": "FLOAT64", "value": "2.0"},
+            "c": {"type": "STRING", "value": "3"},
+            "d": {"type": "BOOL", "value": "True"},
+            "e": {"type": "UNKNOWN", "value": "None"},
+            "f": {
+                "type": "LIST",
+                "value": [
+                    {"type": "INT64", "value": "1"},
+                    {"type": "INT64", "value": "2"},
+                    {"type": "INT64", "value": "3"},
+                ],
+            },
+            "g": {
+                "type": "TUPLE",
+                "value": [
+                    {"type": "INT64", "value": "4"},
+                    {"type": "INT64", "value": "5"},
+                    {"type": "INT64", "value": "6"},
+                ],
+            },
+            "h": {
+                "type": "MAP",
+                "value": [
+                    {
+                        "key": {"type": "STRING", "value": "i"},
+                        "value": {"type": "INT64", "value": "7"},
+                    },
+                ],
+            },
+            "i": {
+                "type": "OBJECT",
+                "pythonType": "starwhale.core.dataset.type.Link",
+                "value": {
+                    "_signed_uri": {"type": "STRING", "value": ""},
+                    "_type": {"type": "STRING", "value": "link"},
+                    "data_type": {"type": "UNKNOWN", "value": "None"},
+                    "extra_info": {"type": "MAP", "value": []},
+                    "offset": {"type": "INT64", "value": "0"},
+                    "scheme": {"type": "STRING", "value": ""},
+                    "size": {"type": "INT64", "value": "-1"},
+                    "uri": {"type": "STRING", "value": "foo"},
+                },
+            },
+        }
     ]
 
 

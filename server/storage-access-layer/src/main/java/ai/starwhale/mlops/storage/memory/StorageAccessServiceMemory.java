@@ -26,6 +26,7 @@ import java.io.InputStream;
 import java.util.Map;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.stream.Stream;
+import org.apache.commons.codec.digest.DigestUtils;
 
 /**
  * For unit test only.
@@ -36,11 +37,16 @@ public class StorageAccessServiceMemory implements StorageAccessService {
 
     @Override
     public StorageObjectInfo head(String path) throws IOException {
+        return this.head(path, false);
+    }
+
+    @Override
+    public StorageObjectInfo head(String path, boolean md5sum) throws IOException {
         var data = this.store.get(path);
         if (data == null) {
-            return new StorageObjectInfo(false, 0L, null);
+            return new StorageObjectInfo(false, 0L, null, null);
         }
-        return new StorageObjectInfo(true, (long) data.length, null);
+        return new StorageObjectInfo(true, (long) data.length, md5sum ? DigestUtils.md5Hex(data) : null, null);
     }
 
     @Override
@@ -87,7 +93,12 @@ public class StorageAccessServiceMemory implements StorageAccessService {
     }
 
     @Override
-    public String signedUrl(String path, Long expTimeMillis) throws IOException {
-        return null;
+    public String signedUrl(String path, Long expTimeMillis) {
+        return path;
+    }
+
+    @Override
+    public String signedPutUrl(String path, Long expTimeMillis) {
+        return path;
     }
 }

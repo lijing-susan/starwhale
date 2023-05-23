@@ -95,9 +95,9 @@ Switch the button to set a dataset version to a shared mode if the dataset belon
 
      ![image](https://user-images.githubusercontent.com/101299635/234804126-3f6f76b0-95ba-4bf4-9150-6ee7c9563c54.png)
 
- - **Text data visualization**
+ - **Text data viewer**
 
-   Text data visualization support viewing audio data in tables(default) or a larger view
+   Text data visualization support viewing text data in tables(default) or a larger view
 
    ![image](https://user-images.githubusercontent.com/101299635/234797034-84f2c866-a06a-4552-a292-966d9e8522d5.png)
 

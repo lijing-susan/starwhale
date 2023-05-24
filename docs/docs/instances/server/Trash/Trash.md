@@ -4,7 +4,7 @@ title: Trash in Starwhale
 
 ## Trash type
 
-Within Starwhale, there are four distinct types of trahs: Evaluations, Models, Datasets, and Runtimes. Users can remove any of these objects, and subsequently restore them from the trash can
+Within Starwhale, there are three distinct types of trash: Models, Datasets, and Runtimes. Users can remove any of these objects, and subsequently restore them from the trash can
 
 ## Search and filter
 

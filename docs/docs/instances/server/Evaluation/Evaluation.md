@@ -120,12 +120,6 @@ Hover on the top of the chart，click the **Configuration** button, and then sel
 
 ![image](https://github.com/lijing-susan/starwhale/assets/101299635/b15d4113-2774-42ee-b82f-c07cf0910845)
 
-### Evaluation DAG
-
-Click the **Actions** tab，you can see the DAG graph
-
-![image](https://github.com/lijing-susan/starwhale/assets/101299635/5fbeff02-0011-4303-9207-4b27be02a42c)
-
 ### Evaluation tasks and logs
 
 **Tasks**
@@ -136,6 +130,6 @@ Click **Tasks** tab to see all the tasks of an evaluation, or click a specific b
 
 **Logs**
 
-Clic **View logs** buttton at the end of the task table to view logs.
+Click **View logs** buttton at the end of the task table to view logs.
 
 ![image](https://github.com/lijing-susan/starwhale/assets/101299635/f1b896a7-f55b-40c9-a419-f44e0a3575fa)
